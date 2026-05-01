@@ -26,7 +26,8 @@ async function forwardDispatchToDO(env: Env, p: DispatchPayload): Promise<boolea
     .maybeSingle()
   if (!link) return false
 
-  const id = env.PATIENT_AGENT.idFromName(`patient:${p.patient_id}`)
+  // Same routing convention as the webhook path — DO is keyed on tg:<id>.
+  const id = env.PATIENT_AGENT.idFromName(`tg:${link.telegram_user_id}`)
   const stub = env.PATIENT_AGENT.get(id)
   await stub.fetch("https://do.local/dispatch", {
     method: "POST",
@@ -65,15 +66,12 @@ async function routeWebhook(request: Request, env: Env): Promise<Response> {
     return new Response("ok", { status: 200 })
   }
 
-  // Route to the right DO. Linked patients are addressed by their stable
-  // profile UUID; pre-link conversations live under tg:<id>.
-  const svc = serviceClient(env)
-  const { data: rows } = await svc.rpc("concierge_lookup_patient_by_telegram", {
-    p_telegram_user_id: tgUserId
-  })
-  const link = Array.isArray(rows) && rows.length > 0 ? rows[0] : null
-  const doName = link?.patient_id ? `patient:${link.patient_id}` : `tg:${tgUserId}`
-
+  // Always route by Telegram user ID. The link table still serves the
+  // scheduler's reverse lookup (patient_id → telegram_user_id), but the
+  // DO instance is keyed on the Telegram ID for the entire conversation
+  // lifecycle. Routing on patient:<uuid> after the link was created
+  // would lose state stored under tg:<id> during the OTP flow.
+  const doName = `tg:${tgUserId}`
   const id = env.PATIENT_AGENT.idFromName(doName)
   const stub = env.PATIENT_AGENT.get(id)
 

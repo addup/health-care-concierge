@@ -31,6 +31,8 @@ type StringKey =
   | "booking_no_types"
   | "booking_ask_slot"
   | "booking_no_slots"
+  | "booking_no_dates_in_range"
+  | "booking_interest_registered"
   | "booking_slot_taken"
   | "booking_confirmed"
   | "booking_failed"
@@ -86,6 +88,8 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     booking_no_types: "Não há tipos de consulta disponíveis para essa especialidade. Tenta outra.",
     booking_ask_slot: "Horários disponíveis em {date}:",
     booking_no_slots: "Sem horários disponíveis em {date}. Escolhe outro dia.",
+    booking_no_dates_in_range: "Sem horários disponíveis para {type} nos próximos {days} dias. Tenta outra especialidade ou contacta a clínica.",
+    booking_interest_registered: "Sem horários disponíveis para {type} nos próximos {days} dias 😕\n\nJá registei o teu interesse — alguém da clínica vai contactar-te em breve para confirmar uma data.",
     booking_slot_taken: "Esse horário foi entretanto ocupado. Vou voltar a procurar.",
     booking_confirmed: "✅ Marcado: {type} com {doctor}, {when}. Recebes um lembrete 24h antes.",
     booking_failed: "Não consegui marcar agora. Tenta outra vez ou contacta a clínica.",
@@ -140,6 +144,8 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     booking_no_types: "No appointment types available for that specialty. Pick another.",
     booking_ask_slot: "Available slots on {date}:",
     booking_no_slots: "No available slots on {date}. Pick another day.",
+    booking_no_dates_in_range: "No available slots for {type} in the next {days} days. Try another specialty or contact the clinic.",
+    booking_interest_registered: "No available slots for {type} in the next {days} days 😕\n\nI've registered your interest — someone from the clinic will contact you soon to confirm a date.",
     booking_slot_taken: "That slot was just taken. Let me look again.",
     booking_confirmed: "✅ Booked: {type} with {doctor}, {when}. You'll get a reminder 24h before.",
     booking_failed: "I couldn't complete the booking right now. Try again or call the clinic.",

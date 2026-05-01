@@ -148,6 +148,21 @@ export class PatientAgent implements DurableObject {
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
     }
+    // /logout fully clears the cached Supabase session, forcing the user
+    // back through the email + OTP flow on the next /start.
+    if (text.startsWith("/logout")) {
+      await this.state.storage.delete([
+        "auth",
+        "pending_otp",
+        "booking_state",
+        "reschedule_state",
+        "cancel_state",
+        "triage_state",
+        "form_state"
+      ])
+      await sendMessage(this.env, chat_id, t(locale, "reset_state"))
+      return
+    }
     if (text.startsWith("/help")) {
       await sendMessage(this.env, chat_id, t(locale, "welcome_unlinked"))
       return
@@ -288,7 +303,39 @@ export class PatientAgent implements DurableObject {
       await this.greetLinked(chat_id, locale, auth.chosen_name)
       return
     }
-    if (auth && !auth.registration_completed) {
+
+    // Self-heal: cached auth has registration_completed=false. Re-check the
+    // profile in case (a) our prior lookup wrongly returned null/false, or
+    // (b) the patient finished their registration in the app since.
+    if (auth) {
+      const svc = serviceClient(this.env)
+      const { data: profile, error } = await svc
+        .from("profiles")
+        .select("chosen_name, registration_completed")
+        .eq("id", auth.patient_id)
+        .maybeSingle()
+      console.log(JSON.stringify({
+        tag: "start-recheck",
+        patient_id: auth.patient_id,
+        profile,
+        profile_error: error?.message ?? null
+      }))
+      if (profile?.registration_completed) {
+        const updated: AuthState = {
+          ...auth,
+          chosen_name: profile.chosen_name ?? auth.chosen_name,
+          registration_completed: true
+        }
+        await this.state.storage.put("auth", updated)
+        // Make sure the Telegram link exists so the router finds the right DO.
+        await svc.rpc("concierge_link_telegram", {
+          p_telegram_user_id: chat_id,
+          p_patient_id: auth.patient_id,
+          p_locale: locale
+        })
+        await this.greetLinked(chat_id, locale, updated.chosen_name)
+        return
+      }
       await sendMessage(
         this.env,
         chat_id,
@@ -296,6 +343,7 @@ export class PatientAgent implements DurableObject {
       )
       return
     }
+
     await this.state.storage.delete("pending_otp")
     await sendMessage(this.env, chat_id, t(locale, "welcome_unlinked"))
   }
@@ -317,6 +365,8 @@ export class PatientAgent implements DurableObject {
       email,
       options: { shouldCreateUser: false }
     })
+
+    console.log(JSON.stringify({ tag: "otp-requested", email, error: error?.message ?? null }))
 
     if (error) {
       // Supabase doesn't reliably distinguish "user not found" from other
@@ -373,6 +423,16 @@ export class PatientAgent implements DurableObject {
       type: "email"
     })
 
+    console.log(JSON.stringify({
+      tag: "otp-verify-result",
+      email: pending.email,
+      code_length: code.length,
+      error: error?.message ?? null,
+      has_user: !!data?.user,
+      has_session: !!data?.session,
+      user_id: data?.user?.id ?? null
+    }))
+
     if (error || !data?.user || !data?.session) {
       await this.bumpOtpAttempt(pending)
       await sendMessage(this.env, chat_id, t(locale, "otp_invalid"))
@@ -386,11 +446,18 @@ export class PatientAgent implements DurableObject {
     // Pull profile fields we care about (service role: avoid an extra RLS round-trip
     // before we even know the registration state).
     const svc = serviceClient(this.env)
-    const { data: profile } = await svc
+    const { data: profile, error: profileError } = await svc
       .from("profiles")
       .select("chosen_name, registration_completed")
       .eq("id", patient_id)
       .maybeSingle()
+
+    console.log(JSON.stringify({
+      tag: "otp-verified",
+      patient_id,
+      profile,
+      profile_error: profileError?.message ?? null
+    }))
 
     const chosen_name = profile?.chosen_name ?? null
     const registration_completed = profile?.registration_completed ?? false

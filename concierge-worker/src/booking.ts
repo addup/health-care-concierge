@@ -130,7 +130,7 @@ async function proceedToTypeStep(
 
   if (types.length === 1) {
     const only = types[0]!
-    await proceedToDateStep(env, storage, chat_id, locale, {
+    await proceedToDateStep(env, storage, chat_id, locale, auth, {
       step: "ask_date",
       specialty_id,
       specialty_name,
@@ -175,7 +175,7 @@ export async function handleTypeChoice(
     await sendMessage(env, chat_id, t(locale, "booking_failed"))
     return
   }
-  await proceedToDateStep(env, storage, chat_id, locale, {
+  await proceedToDateStep(env, storage, chat_id, locale, auth, {
     ...prev,
     step: "ask_date",
     specialty_id: prev.specialty_id ?? tp.specialty_id,
@@ -185,29 +185,86 @@ export async function handleTypeChoice(
   })
 }
 
+const DATE_LOOKAHEAD_DAYS = 14
+
 async function proceedToDateStep(
   env: Env,
   storage: DurableObjectStorage,
   chat_id: number,
   locale: Locale,
+  auth: AuthCtx,
   state: BookingState
 ): Promise<void> {
   await storage.put(STORAGE_KEY, state)
+  await sendChatAction(env, chat_id, "typing")
+
+  // Build candidate dates and check availability for each one in parallel.
   const today = new Date()
-  const buttons: ReplyMarkup = {
-    inline_keyboard: []
-  }
-  for (let i = 0; i < 6; i++) {
+  const candidates: { iso: string; date: Date; offset: number }[] = []
+  for (let i = 0; i < DATE_LOOKAHEAD_DAYS; i++) {
     const d = new Date(today)
     d.setUTCDate(today.getUTCDate() + i)
-    const iso = d.toISOString().slice(0, 10) // YYYY-MM-DD
-    const label =
-      i === 0
-        ? t(locale, "date_today")
-        : i === 1
-          ? t(locale, "date_tomorrow")
-          : `${dowLabel(locale, d.getUTCDay())} ${d.getUTCDate()}`
-    buttons.inline_keyboard!.push([{ text: label, callback_data: `d:${iso}` }])
+    candidates.push({
+      iso: d.toISOString().slice(0, 10),
+      date: d,
+      offset: i
+    })
+  }
+
+  const sb = patientClient(env, auth.access_token)
+  const checks = await Promise.all(
+    candidates.map(async (c) => {
+      const { data, error } = await sb.rpc("get_available_slots", {
+        _appointment_type_id: state.appointment_type_id!,
+        _target_date: c.iso
+      })
+      if (error || !data) return { ...c, hasSlots: false }
+      const slots = (data as unknown[]).filter(isSlotBlob)
+      return { ...c, hasSlots: slots.length > 0 }
+    })
+  )
+
+  const available = checks.filter((c) => c.hasSlots).slice(0, 6)
+
+  if (available.length === 0) {
+    // No-availability path: capture this as patient interest in the audit
+    // log so the clinic can follow up. The audit_log is the cheapest place
+    // (already indexed by patient_id, no schema change needed).
+    await logAction(env, {
+      patient_id: auth.patient_id,
+      telegram_user_id: chat_id,
+      intent: "BOOK",
+      action: "specialty_interest_registered",
+      payload: {
+        specialty_id: state.specialty_id,
+        specialty_name: state.specialty_name,
+        appointment_type_id: state.appointment_type_id,
+        appointment_type_name: state.appointment_type_name,
+        lookahead_days: DATE_LOOKAHEAD_DAYS
+      }
+    })
+    await sendMessage(
+      env,
+      chat_id,
+      t(locale, "booking_interest_registered", {
+        days: String(DATE_LOOKAHEAD_DAYS),
+        type: state.appointment_type_name ?? ""
+      })
+    )
+    await storage.delete(STORAGE_KEY)
+    return
+  }
+
+  const buttons: ReplyMarkup = {
+    inline_keyboard: available.map((c) => {
+      const label =
+        c.offset === 0
+          ? t(locale, "date_today")
+          : c.offset === 1
+            ? t(locale, "date_tomorrow")
+            : `${dowLabel(locale, c.date.getUTCDay())} ${c.date.getUTCDate()}`
+      return [{ text: label, callback_data: `d:${c.iso}` }]
+    })
   }
   await sendMessage(env, chat_id, t(locale, "booking_ask_date"), buttons)
 }
@@ -262,8 +319,9 @@ async function renderSlots(
 
   if (slots.length === 0) {
     await sendMessage(env, chat_id, t(locale, "booking_no_slots", { date: dateLabel }))
-    // Re-prompt for a different day.
-    await proceedToDateStep(env, storage, chat_id, locale, { ...state, step: "ask_date" })
+    // Re-prompt for a different day. Pre-filtered now, so this fallback
+    // only triggers in races (slot grabbed between list and select).
+    await proceedToDateStep(env, storage, chat_id, locale, auth, { ...state, step: "ask_date" })
     return
   }
 
