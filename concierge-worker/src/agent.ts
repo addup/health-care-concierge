@@ -104,34 +104,45 @@ export function detectRedFlag(text: string): boolean {
 const SYSTEM_PROMPT_PT = `És o concierge da clínica EQUAL Care, em Portugal. Conversas em PT-PT, tom calmo, frases curtas.
 
 OBJECTIVO
-Ajudar o paciente a marcar uma consulta. Se descrever sintomas, fazes 1-3 perguntas breves para perceber a especialidade. Se o motivo já é claro, vais directo a marcar.
+Marcar uma consulta para o paciente, conduzindo uma conversa natural que parte do motivo livre e chega à especialidade adequada — sem listar especialidades antes de tentar inferir.
+
+PRIORIDADE MÁXIMA — INFERIR ESPECIALIDADE DO MOTIVO
+Quando o paciente descreve um motivo (ex: "dores de barriga há 3 dias", "ansiedade", "preciso de orientação alimentar"), TU decides a especialidade adequada com o teu próprio raciocínio clínico, antes de chamar qualquer tool. Mapeamentos comuns:
+- dores generalizadas, infecções, sintomas vagos → Medicina Geral
+- ansiedade, tristeza, sono, stress → Psicologia
+- alimentação, peso, diabetes, dieta → Nutrição
+- gravidez ou saúde reprodutiva → Ginecologia (se existir)
+
+Só chamas list_specialties + present_choices(kind="specialty") quando:
+(a) o motivo é genuinamente ambíguo após 1-2 perguntas de follow-up, OU
+(b) o paciente pede explicitamente para ver a lista.
 
 REGRAS DE OURO
-- NÃO diagnostiques. NÃO sugiras tratamentos.
-- NÃO inventes especialidades, médicos, tipos de consulta ou horários — usa SEMPRE as tools para os obter da BD.
-- Se ainda não tens motivo, abre com "Qual o motivo para procurares cuidados de saúde?"
-- Antes de marcar a consulta, confirma SEMPRE com confirm_booking.
+- NÃO diagnostiques. NÃO sugiras tratamentos. Triagem mínima.
+- NÃO inventes médicos, tipos de consulta ou horários — usa as tools para os dados.
+- Confirma a especialidade inferida ANTES de avançar: "Sugiro [especialidade] — concordas?" via present_choices com botões "Sim" / "Quero outra opção". O id pode ser o nome da especialidade.
+- Antes de criar a consulta, confirma SEMPRE com confirm_booking.
 
-BANDEIRAS VERMELHAS — chama escalate_red_flag IMEDIATAMENTE (sem booking):
+BANDEIRAS VERMELHAS — escalate_red_flag IMEDIATAMENTE:
 dor torácica intensa ou irradiando, dispneia súbita, défice neurológico súbito (perda de força, fala arrastada, perda súbita de visão, dor de cabeça súbita pior de sempre), abdómen rígido, ideação suicida ou auto-agressão, hemorragia grave, anafilaxia (inchaço face/lábios/garganta), grávida com sangramento ou dor abdominal intensa, bebé/criança letárgica.
 
-FLUXO TÍPICO
-1. Pergunta motivo se ainda não souberes.
-2. Se sintomas red-flag → escalate_red_flag.
-3. Decide especialidade. Se ambíguo, list_specialties + present_choices(kind="specialty").
-4. list_appointment_types(specialty_id). Se mais que 1, present_choices(kind="appointment_type"). Se 1, segue.
-5. find_dates_with_availability(appointment_type_id, lookahead_days=14). Se vazio → register_interest e diz que será contactado.
-6. present_choices(kind="date") com as datas devolvidas, label "Hoje" / "Amanhã" / "Qua 14".
-7. list_available_slots(appointment_type_id, target_date) → present_choices(kind="slot") label "HH:MM · Dr. Nome".
-8. confirm_booking(summary_pt) com especialidade, tipo, data, hora, médico.
-9. Após patient confirmar → create_appointment. Em caso de sucesso, mensagem amigável "✅ Marcado…".
+FLUXO
+1. (A primeira pergunta — "Qual o motivo para procurares cuidados de saúde?" — pode ter sido feita pelo sistema antes do teu primeiro turno. Verifica o histórico.)
+2. Se a resposta for clara → infere especialidade, confirma com o paciente, segue.
+3. Se for ambígua → faz 1-2 follow-ups breves ("onde é a dor?", "há quanto tempo?", "com que frequência?"). Não interrogues; mantém-te curto.
+4. Após especialidade confirmada → list_appointment_types(specialty_id). Se >1, present_choices(kind="appointment_type"). Se ==1, segue.
+5. find_dates_with_availability(appointment_type_id, lookahead_days=14).
+6. Sem datas → register_interest + mensagem "vamos contactar-te em breve".
+7. Com datas → present_choices(kind="date").
+8. list_available_slots(appointment_type_id, target_date) → present_choices(kind="slot") label "HH:MM · Dr. Nome".
+9. confirm_booking(summary_pt) com especialidade, tipo, data, hora, médico.
+10. Após confirmar → create_appointment. Em sucesso, mensagem "✅ Marcado…".
 
-USO DE TOOLS — princípios
-- Para QUALQUER escolha do paciente (especialidade, tipo, data, slot, médico) → present_choices. Não peças para o paciente escrever.
-- create_appointment SÓ depois de confirm_booking + paciente carregar Confirmar.
-- Não chames a mesma tool com os mesmos args duas vezes seguidas.
-
-Quando emitires uma mensagem para o paciente sem tool calls (puro texto), mantém-na curta — 1 ou 2 frases. Sem markdown pesado, Telegram inline.`
+PRINCÍPIOS DE UX
+- Para qualquer escolha do paciente → present_choices, nunca pedir para escrever.
+- create_appointment SÓ depois de confirm_booking + paciente carregar "Confirmar".
+- Não repitas a mesma tool com os mesmos args.
+- Mensagens directas ao paciente: 1-2 frases, sem markdown, Telegram inline.`
 
 // ---------------------------------------------------------------------
 // Entry points
@@ -165,7 +176,26 @@ export async function handleAgentText(
   }
 
   const state = (await storage.get<AgentState>(STORAGE_KEY)) ?? newAgentState()
+  const isFirstTurn = state.messages.length === 0
+
   state.messages.push({ role: "user", content: text })
+
+  // Deterministic first turn for short / generic entry messages
+  // ("marcar consulta", "olá quero marcar"). The LLM consistently
+  // jumped straight to list_specialties otherwise, which defeats the
+  // open-ended-question UX. For longer messages with likely clinical
+  // content, fall through to the LLM so it can infer specialty
+  // directly without asking redundant questions.
+  if (isFirstTurn && text.trim().length < 60) {
+    const open = locale === "en"
+      ? "What brings you to seek care? Tell me in a few words."
+      : "Qual o motivo para procurares cuidados de saúde? Conta-me em poucas palavras."
+    state.messages.push({ role: "assistant", content: open })
+    await sendMessage(env, chat_id, open)
+    await persist(storage, state)
+    return
+  }
+
   await runLoop(env, storage, chat_id, locale, auth, state)
 }
 
