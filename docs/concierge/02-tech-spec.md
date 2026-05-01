@@ -24,24 +24,37 @@
              │ Supabase JS client (with patient session)
              ▼
         ┌─────────────────────────────────────┐
-        │  Supabase (Postgres)                │
-        │  ─ existing: patients, appointments,│
-        │    professionals, specialties       │
-        │  ─ new: form_templates,             │
-        │    form_dispatches, form_responses, │
-        │    telegram_links, agent_audit_log  │
-        │  ─ existing RPCs: auth_request_otp, │
-        │    auth_verify_otp, list_avail...   │
+        │  Supabase (Postgres) — addup/       │
+        │  equal-care-platform DB             │
+        │  ─ existing: profiles, doctors,     │
+        │    specialties, doctor_specialties, │
+        │    appointment_types, appointments, │
+        │    forms, form_versions,            │
+        │    form_responses (intake)          │
+        │  ─ new (concierge_ namespace):      │
+        │    concierge_telegram_links,        │
+        │    concierge_form_templates,        │
+        │    concierge_form_dispatches,       │
+        │    concierge_form_responses,        │
+        │    concierge_appointment_state,     │
+        │    concierge_audit_log              │
+        │  ─ existing RPCs reused:            │
+        │    get_available_slots,             │
+        │    check_slot_available             │
         │  ─ new RPCs: dispatch_form,         │
         │    record_form_response, ...        │
         └─────────────┬───────────────────────┘
                       │
-                      │ realtime / direct query
+                      │ direct query
                       ▼
         ┌─────────────────────────────────────┐
-        │  Next.js dashboard (existing)       │
-        │  ─ /clinica/proms (new page)        │
-        │  ─ /clinica/prems (new page)        │
+        │  Standalone clinic dashboard SPA    │
+        │  (this repo, dashboard/)            │
+        │  Vite + React + Tailwind            │
+        │  ─ /proms    EQ-5D index over time  │
+        │  ─ /prems    NPS + comments         │
+        │    No auth — local demo only        │
+        │    (uses service-role Supabase key) │
         └─────────────────────────────────────┘
 
         ┌─────────────────────────────────────┐
@@ -55,6 +68,8 @@
         └─────────────────────────────────────┘
 ```
 
+The existing platform (`addup/equal-care-platform`) is a **single Vite + React SPA** (not Next.js, not a monorepo). The concierge lives in **its own repo** (`addup/health-care-concierge`); the only contact surface is the shared Supabase project. We do **not** add pages to the platform — the clinic dashboard is a separate small SPA built inside this repo at `dashboard/`.
+
 ## 2. Cloudflare Workers
 
 ### 2.1 `concierge` Worker
@@ -63,6 +78,7 @@
 - `AI` — Workers AI binding
 - `PATIENT_AGENT` — Durable Object namespace `PatientAgent`
 - `FAQ_INDEX` — Vectorize index for FAQ embeddings
+- `KV` — short-id ↔ uuid mappings for Telegram callbacks
 - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY` — secrets
 - `TELEGRAM_BOT_TOKEN` — secret
 
@@ -76,13 +92,13 @@
 ### 2.2 `PatientAgent` Durable Object
 
 **Storage keys:**
-- `auth` — `{ patient_id, supabase_session, linked_at } | null`
+- `auth` — `{ patient_id, supabase_session, linked_at } | null` (`patient_id` IS the auth user UUID; `profiles.id = auth.users.id`)
 - `pending_otp` — `{ email, attempts, expires_at } | null`
 - `intent_state` — current multi-turn intent (TRIAGE, BOOK, RESCHEDULE, FORM)
 - `triage_state` — `{ symptoms: [...], turn: n, summary: '...' }`
 - `form_state` — `{ dispatch_id, template, cursor, answers: {...} }`
 - `last_message_at` — timestamp
-- `locale` — `'pt-PT' | 'en'` (auto-detected from first text, can be overridden)
+- `locale` — `'pt' | 'en'`
 
 **Methods (all callable via `fetch()` on the DO):**
 - `handleUpdate(update)` — main entry; dispatches to `handleText`, `handleCallback`, `handleCommand`
@@ -100,13 +116,21 @@
 
 **Cron triggers (`wrangler.toml`):** `0 * * * *` — hourly.
 
-**Logic per run:**
-1. `SELECT * FROM appointments WHERE start_at BETWEEN now()+23h AND now()+25h AND reminder_sent_at IS NULL` → send 24h reminder, set `reminder_sent_at`
-2. `SELECT * FROM appointments WHERE end_at <= now()-24h AND prem_dispatched_at IS NULL` → create `form_dispatches` row (kind=PREM), then process below
-3. `SELECT * FROM appointments WHERE end_at <= now()-7d AND prom_t7_dispatched_at IS NULL` → create `form_dispatches` row (kind=PROM, schedule_label='T+7d')
-4. Same for T+28d
-5. `SELECT * FROM form_dispatches WHERE completed_at IS NULL AND abandoned_at IS NULL AND ((sent_at IS NULL AND scheduled_for <= now()) OR (sent_at IS NOT NULL AND reminder_count = 0 AND sent_at <= now()-48h) OR (sent_at IS NOT NULL AND reminder_count = 1 AND sent_at <= now()-7d))` → for each, look up `telegram_links`, push to `PatientAgent`, increment `reminder_count` or set `sent_at`
-6. `UPDATE form_dispatches SET abandoned_at = now() WHERE reminder_count >= 2 AND sent_at <= now()-9d AND completed_at IS NULL`
+**Logic per run** (note: `appointments` has no `start_at` / `end_at` — use `scheduled_at` and `(scheduled_at + duration_min * interval '1 minute')` for the end; bookkeeping lives in `concierge_appointment_state`, not in `appointments` itself):
+
+1. **24h reminders.**
+   ```sql
+   select a.* from appointments a
+   left join concierge_appointment_state s on s.appointment_id = a.id
+   where a.scheduled_at between now()+'23 hours' and now()+'25 hours'
+     and a.status in ('scheduled','confirmed')
+     and s.reminder_sent_at is null
+   ```
+   Push, then `upsert` `reminder_sent_at` on the state row.
+2. **PREM creation @ T+24h.** Same pattern using `(a.scheduled_at + a.duration_min * interval '1 minute') <= now() - '24 hours'` and `s.prem_dispatched_at is null` and `a.status = 'completed'`.
+3. **PROM_T7d / PROM_T28d** identically with the `(end + Nd)` predicate and the corresponding state column.
+4. Send-due / reminder cascade reads from `concierge_form_dispatches` exactly as before.
+5. `select abandon_stale_concierge_dispatches()`.
 
 ## 3. Intent classification
 
@@ -165,22 +189,22 @@ Triage state machine: max 4 turns; if no clear specialty after 4 turns → defau
 
 ## 6. Database changes (Supabase)
 
+All concierge-owned tables are prefixed `concierge_` to namespace them away from existing platform tables — this matters because `form_responses` already exists in the platform with a different shape.
+
 ### 6.1 New tables
 
 ```sql
--- Maps Telegram users to EqualCare patients
-create table telegram_links (
+-- Maps Telegram users to EqualCare patients (profiles)
+create table concierge_telegram_links (
   telegram_user_id  bigint primary key,
-  patient_id        uuid not null references patients(id) on delete cascade,
+  patient_id        uuid not null references profiles(id) on delete cascade,
   linked_at         timestamptz not null default now(),
   last_active_at    timestamptz not null default now(),
-  locale            text not null default 'pt-PT'
+  locale            text not null default 'pt'
 );
 
-create index on telegram_links(patient_id);
-
 -- Form templates (PREM and EQ-5D-5L only in V1)
-create table form_templates (
+create table concierge_form_templates (
   id          text primary key,
   kind        text not null check (kind in ('PREM','PROM')),
   name        text not null,
@@ -190,11 +214,11 @@ create table form_templates (
 );
 
 -- One row per scheduled form send (PREM at T+24h, PROM at T+7d and T+28d)
-create table form_dispatches (
+create table concierge_form_dispatches (
   id                text primary key,                -- nanoid(10)
   appointment_id    uuid not null references appointments(id) on delete cascade,
-  patient_id        uuid not null references patients(id) on delete cascade,
-  template_id       text not null references form_templates(id),
+  patient_id        uuid not null references profiles(id) on delete cascade,
+  template_id       text not null references concierge_form_templates(id),
   schedule_label    text not null,                   -- 'PREM_T24h' | 'PROM_T7d' | 'PROM_T28d'
   scheduled_for     timestamptz not null,
   sent_at           timestamptz,
@@ -202,64 +226,121 @@ create table form_dispatches (
   last_reminder_at  timestamptz,
   completed_at      timestamptz,
   abandoned_at      timestamptz,
-  channel           text not null default 'telegram'
+  channel           text not null default 'telegram',
+  unique (appointment_id, schedule_label)
 );
 
-create index on form_dispatches (scheduled_for) where sent_at is null;
-create index on form_dispatches (sent_at) where completed_at is null and abandoned_at is null;
-create index on form_dispatches (patient_id);
-
--- Form responses
-create table form_responses (
+-- Concierge form responses. Note: distinct from the existing platform
+-- `form_responses` table, which stores intake forms keyed by appointment.
+create table concierge_form_responses (
   id            uuid primary key default gen_random_uuid(),
-  dispatch_id   text not null unique references form_dispatches(id) on delete cascade,
-  patient_id    uuid not null references patients(id) on delete cascade,
-  template_id   text not null references form_templates(id),
-  answers       jsonb not null,    -- { "mobility":1, "self_care":2, ... } or { "nps":9, ... }
-  score         jsonb not null,    -- { "eq5d_index":0.812, "vas":75 } or { "nps_segment":"promoter" }
+  dispatch_id   text not null unique references concierge_form_dispatches(id) on delete cascade,
+  patient_id    uuid not null references profiles(id) on delete cascade,
+  template_id   text not null references concierge_form_templates(id),
+  answers       jsonb not null,
+  score         jsonb not null,
   completed_at  timestamptz not null default now()
 );
 
-create index on form_responses (patient_id, completed_at);
+-- Sidecar bookkeeping for appointments. We do NOT alter the existing
+-- appointments table; the concierge tracks its own per-appointment state.
+create table concierge_appointment_state (
+  appointment_id          uuid primary key references appointments(id) on delete cascade,
+  reminder_sent_at        timestamptz,
+  prem_dispatched_at      timestamptz,
+  prom_t7_dispatched_at   timestamptz,
+  prom_t28_dispatched_at  timestamptz,
+  updated_at              timestamptz not null default now()
+);
 
 -- Audit log for the agent (one row per agent action)
-create table agent_audit_log (
-  id            uuid primary key default gen_random_uuid(),
-  patient_id    uuid references patients(id) on delete set null,
-  telegram_user_id bigint,
-  intent        text,
-  action        text not null,         -- 'book','reschedule','cancel','triage','faq','form_send','form_complete'
-  payload       jsonb,
-  created_at    timestamptz not null default now()
+create table concierge_audit_log (
+  id                uuid primary key default gen_random_uuid(),
+  patient_id        uuid references profiles(id) on delete set null,
+  telegram_user_id  bigint,
+  intent            text,
+  action            text not null,
+  payload           jsonb,
+  created_at        timestamptz not null default now()
 );
 ```
 
 ### 6.2 New RLS policies
 
-- `telegram_links`: only service role and the matching patient can read; only service role can write
-- `form_dispatches`: only service role can write; matching patient can read their own
-- `form_responses`: only service role can write; matching patient and clinic staff can read
-- `agent_audit_log`: only service role and clinic staff (admin) can read
+- `concierge_telegram_links`: only service role and the matching patient can read; only service role can write
+- `concierge_form_dispatches` / `_form_responses` / `_appointment_state`: only service role can write; matching patient can read their own
+- Clinic staff (`profiles.role = 'admin'`, checked via existing `has_role(auth.uid(), 'admin')` helper) can read `concierge_form_responses`, `concierge_form_dispatches`, `concierge_audit_log`
+- `concierge_audit_log`: only service role and admin can read
 
-### 6.3 New / required RPCs
+### 6.3 Integration with existing platform — auth, listing, booking
 
-The agent calls these via Supabase JS with the patient's session JWT (so RLS applies) where possible, and via service role only for cross-patient operations (scheduler).
+The agent does **NOT** introduce new RPCs for auth or appointment lifecycle. It uses what is already in `addup/equal-care-platform`:
 
-To be confirmed against existing repo:
+**Authentication** — Supabase Auth native, *not* custom RPCs. The platform uses email/SMS magic-link OTP via `supabase.auth.signInWithOtp` and `supabase.auth.verifyOtp`. The agent does the same:
 
-- `auth_request_otp(p_email text)` — assumed to exist
-- `auth_verify_otp(p_email text, p_code text)` — assumed to exist; should return session
-- `list_availability(p_specialty text, p_from timestamptz, p_to timestamptz)` — assumed to exist
-- `create_appointment(p_slot_id, p_patient_id, p_notes)` — assumed to exist
-- `reschedule_appointment(p_appointment_id, p_new_slot_id)` — assumed to exist
-- `cancel_appointment(p_appointment_id)` — assumed to exist
-- `list_my_appointments(p_patient_id, p_from, p_to)` — assumed to exist
+```ts
+// 1) Patient gives email
+await supabase.auth.signInWithOtp({
+  email,
+  options: { shouldCreateUser: false }    // bot does not register new patients
+})
 
-**New RPCs to author:**
-- `link_telegram(p_telegram_user_id bigint, p_patient_id uuid, p_locale text)` — service role
-- `unlink_telegram(p_telegram_user_id bigint)` — service role
-- `dispatch_form(p_appointment_id uuid, p_template_id text, p_schedule_label text, p_scheduled_for timestamptz)` — service role
-- `record_form_response(p_dispatch_id text, p_answers jsonb, p_score jsonb)` — service role; idempotent on (dispatch_id)
+// 2) Patient pastes the 6-digit code
+const { data, error } = await supabase.auth.verifyOtp({
+  email, token, type: 'email'
+})
+// data.user.id IS the patient_id (profiles.id = auth.users.id)
+```
+
+After verification, the bot stores the session in DO storage and writes the `concierge_telegram_links` row via service role.
+
+**Listing & booking** — direct table operations + two existing RPCs:
+
+| Need | Mechanism |
+| --- | --- |
+| List specialties | `select id, name, color from specialties where is_active = true` |
+| List doctors for a specialty | `select d.* from doctors d join doctor_specialties ds on ds.doctor_id = d.id where ds.specialty_id = $1` |
+| Map specialty → `appointment_type_id` | `select id, name, default_duration_min from appointment_types where specialty_id = $1 and is_active = true`. **If the result has one row**, use it. **If more than one**, the bot renders an inline keyboard with one button per type (label = `name`, e.g. "Primeira consulta" vs "Consulta de seguimento") and waits for the tap before continuing. The chosen row's `default_duration_min` flows into the slot RPCs and the appointments insert. |
+| List availability | `rpc('get_available_slots', { _appointment_type_id, _target_date, _doctor_id_filter })` returns `jsonb[]` of slots |
+| Pre-flight slot check | `rpc('check_slot_available', { _doctor_id, _scheduled_at, _duration_min })` returns `boolean` |
+| Confirm booking | `insert into appointments (patient_id, doctor_id, appointment_type_id, scheduled_at, duration_min, status) values (..., 'scheduled')`, RLS-gated |
+| List my appointments | `select * from appointments where patient_id = auth.uid() order by scheduled_at` |
+| Reschedule | `update appointments set scheduled_at = $new where id = $appt and patient_id = auth.uid()` (preceded by `check_slot_available`) |
+| Cancel | `update appointments set status = 'cancelled' where id = $appt and patient_id = auth.uid()` |
+
+**Status enum:** `scheduled | confirmed | completed | cancelled | no_show`. The bot creates with `scheduled`; transitions to `completed` happen in the existing platform flow (clinician closes the consultation).
+
+**Existing helpers reused:** `has_role(auth.uid(), 'admin'::app_role)` for clinic-staff RLS gates, `is_clinical_director(auth.uid())` if a read-only oversight role is later wanted.
+
+### 6.4 Existing Edge Functions in `addup/equal-care-platform`
+
+For reference — none of these are integration endpoints for the bot, but they affect adjacent behaviour:
+
+| Function | Purpose | Concierge interaction |
+| --- | --- | --- |
+| `auth-email-hook` | Customizes the OTP email body | Transparent — `signInWithOtp` continues to work |
+| `process-email-queue` | Drains the platform's email send queue | None |
+| `process-reminder-queue` | Sends 24h appointment reminder **emails** | **Coexists** with our scheduler-worker's Telegram reminder for V1. See PRD §9 risk row. |
+| `send-transactional-email`, `preview-transactional-email` | Email send + preview | None |
+| `handle-email-unsubscribe`, `handle-email-suppression` | Email-side compliance | None |
+| `admin-invite-doctor`, `admin-remove-doctor`, `admin-update-email` | Admin operations on doctors / accounts | None |
+| `generate-data-export` | GDPR data export | None |
+
+There is **no** Edge Function for booking, listing, or appointment lifecycle — those operations are exclusively client-side via the two existing RPCs and direct table writes. The concierge does the same.
+
+### 6.5 New RPCs (concierge-owned)
+
+All `security definer`, service role only:
+
+- `concierge_link_telegram(p_telegram_user_id bigint, p_patient_id uuid, p_locale text default 'pt')` — upsert link
+- `concierge_unlink_telegram(p_telegram_user_id bigint)` — delete link
+- `concierge_lookup_patient_by_telegram(p_telegram_user_id bigint)` returns `(patient_id uuid, locale text)`
+- `dispatch_concierge_form(p_id text, p_appointment_id uuid, p_template_id text, p_schedule_label text, p_scheduled_for timestamptz)` — idempotent on `(appointment_id, schedule_label)`
+- `mark_concierge_form_sent(p_dispatch_id text, p_is_reminder boolean default false)`
+- `record_concierge_form_response(p_dispatch_id text, p_answers jsonb, p_score jsonb)` — idempotent on `dispatch_id`
+- `abandon_stale_concierge_dispatches() returns int`
+- `log_concierge_action(p_patient_id uuid, p_telegram_user_id bigint, p_intent text, p_action text, p_payload jsonb default '{}')`
+- `concierge_set_appointment_state(p_appointment_id uuid, p_field text, p_value timestamptz)` — upsert helper for the four bookkeeping columns
 
 ## 7. Form schemas (seed)
 
@@ -307,7 +388,7 @@ Score: `{ "nps": <0-10>, "nps_segment": "detractor"|"passive"|"promoter", "wait_
 
 ### 7.2 EQ-5D-5L (PROM)
 
-Use the official Portuguese EQ-5D-5L wording (Ferreira et al. 2014). Five dimensions, each 5 levels (no problems → extreme problems / unable):
+Use the official Portuguese EQ-5D-5L wording (Ferreira et al. 2014). Five dimensions, each 5 levels:
 
 1. `mobility`
 2. `self_care`
@@ -324,13 +405,11 @@ Score: `{ "profile": "12321", "eq5d_index": 0.812, "vas": 75 }`. Index computed 
 64-byte limit. Format: `t:<topic>:<args>`
 
 - Form answer: `f:<dispatch_id_10>:q:<idx>:a:<value>` (e.g. `f:V1StGXR8_:q:2:a:4`)
-- Booking slot: `b:<slot_id_10>` (slot IDs must be ≤ 10 chars; if longer, store mapping in DO storage)
-- Reschedule confirm: `r:<appt_id_10>`
+- Booking slot: `b:<short_id_10>` — the slot blob returned by `get_available_slots` is JSON; the DO assigns a 10-char short ID per slot and stores the mapping in KV with 30-min TTL
+- Reschedule confirm: `r:<appt_id_10>` (uuid → 10-char shortid in KV)
 - Cancel confirm: `x:<appt_id_10>`
 - 24h reminder action: `m:<appt_id_10>:<confirm|cancel>`
 - Locale switch: `l:pt|en`
-
-If the existing system uses UUIDs > 10 chars, the DO maintains a short-id ↔ uuid map per session.
 
 ## 9. Demo orchestration (for hackathon)
 
@@ -338,18 +417,26 @@ The cron worker runs hourly in production. For the live demo, we expose `POST /a
 
 The seed includes pre-back-dated appointments such that the first cron run will dispatch PREMs and PROMs immediately for several seeded patients.
 
-## 10. Observability
+## 10. Open questions (post-audit of `addup/equal-care-platform`)
 
-- Every agent action writes to `agent_audit_log`
+- *(resolved)* **`profiles.registration_completed = false`** → bot blocks booking and redirects to the app. FAQ remains available. The check happens right after `verifyOtp` succeeds, before linking. Implementation: read `profiles.registration_completed` for `data.user.id`; if `false`, reply "Para marcar consultas, termina primeiro o registo na app: <APP_URL>" and stay in a "FAQ-only" state. Do **not** write the `concierge_telegram_links` row in this case — re-check on each `/start` so the patient can retry after finishing registration.
+- **Patient identifier in scheduler context.** Service-role queries do `patient_id = profiles.id`. RLS-gated patient queries do `patient_id = auth.uid()`. Same UUID; never confuse the two clients.
+- *(resolved)* **Multiple `appointment_types` per specialty.** Bot renders inline buttons, one per active type, labelled by `appointment_types.name`. Patient taps to choose; that selection drives `_appointment_type_id` and `default_duration_min` for the rest of the booking flow. No extra copy beyond the type names themselves.
+- *(resolved)* **Dashboard auth.** No auth for the demo. The SPA reads `concierge_form_responses` directly via the Supabase service-role key, which is OK because it runs **locally only**. **Never deploy this dashboard to a public URL as-is** — bundling the service-role key would expose every row in the project. Productionising means switching to Supabase auth + the `has_role(auth.uid(), 'admin')` gate.
+
+## 11. Observability
+
+- Every agent action writes to `concierge_audit_log`
 - Worker logs streamed via `wrangler tail` during demo
-- Telegram messages stored only as IDs in audit log (no message content) for privacy
+- Telegram messages stored only as IDs in the audit log (no message content) for privacy
 
-## 11. Deferred (V2+)
+## 12. Deferred (V2+)
 
 - Specialty-specific PROMs (PHQ-9, GAD-7, Oswestry, DASH, ...)
 - Multi-channel (WhatsApp, web, voice)
-- Pre-consultation intake form
+- Pre-consultation intake form (note: platform already has one — bot integration deferred)
 - Lab result interpretation
 - Prescription renewal
 - Insurance reimbursement
 - Patient self-registration via bot
+- Unifying `concierge_form_responses` with platform `form_responses` if/when product wants a single response store

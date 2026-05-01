@@ -2,9 +2,9 @@
 
 ## 1. Context
 
-EqualCare is a micro-clinic management SaaS targeting small private clinics in emerging markets, built on Next.js + Supabase. The existing platform (`equal-care-platform`, Lovable-generated) covers patient authentication via email OTP, appointment scheduling (list availability, create, reschedule, cancel), patient profile, and listing of upcoming/past appointments.
+EqualCare is a micro-clinic management SaaS targeting small private clinics in emerging markets. The existing platform (`addup/equal-care-platform`, Lovable-generated **Vite + React SPA on Supabase**) covers patient authentication via Supabase native email/SMS OTP, appointment scheduling, patient profile, and listing of upcoming/past appointments.
 
-This document specifies a **conversational concierge agent** that sits on top of the existing platform. The agent is delivered via Telegram bot for the hackathon demo; the architecture is designed so that adding WhatsApp or web chat later is straightforward, but multi-channel is **not** in scope for V1.
+This document specifies a **conversational concierge agent** that sits on top of the same Supabase project. The agent lives in its own repo (`addup/health-care-concierge`) and never modifies the platform repo — the only contact surface is the database. The agent is delivered via Telegram bot for the hackathon demo; the architecture is designed so that adding WhatsApp or web chat later is straightforward, but multi-channel is **not** in scope for V1.
 
 The concierge is built for **Cloudflare Agents Day**, targeting the Cloudflare "Personal Agent" challenge. It must therefore be deployed on Cloudflare Workers using the Agents SDK.
 
@@ -30,7 +30,7 @@ The agent must:
 6. **Dispatch and collect a PREM** (Patient-Reported Experience Measure) 24h after every consultation
 7. **Dispatch and collect a PROM** (EQ-5D-5L, generic) 7 days and 28 days after every consultation
 8. **Send escalating reminders** for unanswered forms (T+48h after dispatch, T+7d after dispatch, then mark abandoned)
-9. **Render a clinic-facing dashboard** with PROM trends per patient (EQ-5D index over time) and PREM aggregates (NPS, top comments)
+9. **Render a standalone clinic-facing dashboard** (a separate small Vite SPA built in this repo, not a change to the existing platform) with PROM trends per patient (EQ-5D index over time) and PREM aggregates (NPS, top comments)
 
 ## 4. Non-Goals (V1)
 
@@ -164,10 +164,21 @@ A judge or stakeholder using the demo Telegram bot must be able to:
 | EQ-5D-5L licensing | EuroQol Foundation registration is free for non-commercial; demo is fine, register before any paid pilot |
 | Form fatigue (3 forms per consultation) | PREM short (4 questions); PROM at T+7d and T+28d uses same instrument; single-tap inline UX |
 | Bot answers a clinical question it shouldn't | System prompt explicitly forbids diagnostic statements; bot defers all clinical questions to the clinician |
+| No atomic booking RPC — bot must do `check_slot_available` + INSERT in two steps | Tight latency window between check and insert; the platform's UI does the same dance, so worst case mirrors current behaviour. If a race happens, surface "esse horário foi entretanto ocupado" and re-list. |
+| Existing reminder queue (`process-reminder-queue` Edge Function + 24h email template) double-sends with bot reminder | **Decided: coexist in V1.** Telegram + email both fire; no platform changes. V2 may add an opt-out for Telegram-linked patients. |
 
 ## 10. Open Questions for Pedro
 
 - Confirm Portuguese EQ-5D-5L value set (Ferreira 2014) is acceptable, or use TTO-based UK set
-- Do existing RPCs return enough info to render appointment summaries in the bot (specialty name, doctor name, location)? To be confirmed once repo is reviewed
 - Is there a single seed of "clinic FAQ" content somewhere, or do we author it for the demo?
 - For the demo, is it acceptable to manually trigger the cron worker, or should it run on Cloudflare's hourly schedule and be demonstrated with timestamp manipulation?
+- Dashboard auth: the standalone dashboard SPA — does it sign in with the same Supabase auth as the platform (admin role required), or do we expose it via a separate admin token? Default plan: Supabase auth + `has_role(auth.uid(), 'admin')` gate.
+
+### Resolved against the platform repo audit
+
+- `profiles` is the patient table (PK = `auth.users.id`). No `patients` table.
+- Auth is Supabase native OTP — no `auth_request_otp` / `auth_verify_otp` RPCs.
+- Booking is a 2-step pattern (`check_slot_available` + INSERT), not an atomic RPC.
+- Specialty → `appointment_type_id` mapping is via `appointment_types.specialty_id`. `default_duration_min` lives on `appointment_types`.
+- Existing `form_responses` is for **pre-consultation intake**, not PREM/PROM. Concierge follow-up forms get their own `concierge_*` tables.
+- `preferred_language` enum is `'pt' | 'en'` (no region tag).
