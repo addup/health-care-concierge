@@ -10,6 +10,8 @@ import {
 } from "./telegram"
 import { anonClient, serviceClient } from "./supabase"
 import { t, detectLocaleFromText, DEFAULT_LOCALE, type Locale } from "./i18n"
+import { classify, type ClassifiedIntent } from "./intent"
+import { logAction } from "./audit"
 
 interface AuthState {
   patient_id: string
@@ -111,8 +113,55 @@ export class PatientAgent implements DurableObject {
       return
     }
 
-    // Authed + registration_completed = true. Phase 1 stub.
-    await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+    // Authed + registration_completed. Classify intent and route.
+    await sendChatAction(this.env, chat_id, "typing")
+    const classified = await classify(this.env, text, locale)
+    await logAction(this.env, {
+      patient_id: auth.patient_id,
+      telegram_user_id: chat_id,
+      intent: classified.intent,
+      action: "intent_classified",
+      payload: {
+        text,
+        confidence: classified.confidence,
+        source: classified.source,
+        entities: classified.entities
+      }
+    })
+    await this.dispatchIntent(chat_id, locale, auth, classified)
+  }
+
+  /**
+   * Phase 2a routes intents to stubs. Subsequent phases plug real handlers
+   * (BOOK / RESCHEDULE / CANCEL / LIST in 2b–2c, FAQ in 2d, TRIAGE in 3,
+   * FORM_RESPONSE in 4).
+   */
+  private async dispatchIntent(
+    chat_id: number,
+    locale: Locale,
+    auth: AuthState,
+    classified: ClassifiedIntent
+  ): Promise<void> {
+    switch (classified.intent) {
+      case "GREET":
+        await this.greetLinked(chat_id, locale, auth.chosen_name)
+        return
+      case "IDENTIFY":
+        // Already linked — gently acknowledge.
+        await this.greetLinked(chat_id, locale, auth.chosen_name)
+        return
+      case "BOOK":
+      case "RESCHEDULE":
+      case "CANCEL":
+      case "LIST_APPOINTMENTS":
+      case "FAQ":
+      case "TRIAGE":
+      case "FORM_RESPONSE":
+      case "OTHER":
+      default:
+        await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+        return
+    }
   }
 
   private async handleStart(chat_id: number, locale: Locale): Promise<void> {
