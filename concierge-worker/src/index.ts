@@ -1,6 +1,7 @@
 import type { Env } from "./env"
 import { serviceClient } from "./supabase"
 import { setWebhook, type TelegramUpdate } from "./telegram"
+import { seedFaqCorpus } from "./faq"
 
 export { PatientAgent } from "./patient-agent"
 
@@ -46,6 +47,17 @@ async function routeWebhook(request: Request, env: Env): Promise<Response> {
   return new Response("ok", { status: 200 })
 }
 
+async function seedFaqHandler(request: Request, env: Env): Promise<Response> {
+  if (env.ADMIN_SECRET) {
+    const provided = request.headers.get("x-admin-secret")
+    if (provided !== env.ADMIN_SECRET) {
+      return new Response("forbidden", { status: 403 })
+    }
+  }
+  const result = await seedFaqCorpus(env)
+  return Response.json({ ok: true, ...result })
+}
+
 async function setupWebhookHandler(request: Request, env: Env): Promise<Response> {
   if (env.ADMIN_SECRET) {
     const provided = request.headers.get("x-admin-secret")
@@ -75,6 +87,9 @@ export default {
     }
     if (url.pathname === "/admin/setup-webhook" && request.method === "POST") {
       return setupWebhookHandler(request, env)
+    }
+    if (url.pathname === "/admin/seed-faq" && request.method === "POST") {
+      return seedFaqHandler(request, env)
     }
 
     return new Response("not-found", { status: 404 })

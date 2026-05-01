@@ -29,6 +29,7 @@ import {
   handleCancelPick,
   handleCancelConfirm
 } from "./appointments"
+import { faqLookup } from "./faq"
 
 interface AuthState {
   patient_id: string
@@ -150,7 +151,7 @@ export class PatientAgent implements DurableObject {
         entities: classified.entities
       }
     })
-    await this.dispatchIntent(chat_id, locale, auth, classified)
+    await this.dispatchIntent(chat_id, locale, auth, classified, text)
   }
 
   /**
@@ -161,7 +162,8 @@ export class PatientAgent implements DurableObject {
     chat_id: number,
     locale: Locale,
     auth: AuthState,
-    classified: ClassifiedIntent
+    classified: ClassifiedIntent,
+    rawText: string
   ): Promise<void> {
     switch (classified.intent) {
       case "GREET":
@@ -197,6 +199,8 @@ export class PatientAgent implements DurableObject {
         })
         return
       case "FAQ":
+        await faqLookup(this.env, chat_id, rawText, locale)
+        return
       case "TRIAGE":
       case "FORM_RESPONSE":
       case "OTHER":
