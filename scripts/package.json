@@ -1,0 +1,16 @@
+{
+  "name": "seed-scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "tsx seed-demo.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
