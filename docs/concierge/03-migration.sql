@@ -125,22 +125,30 @@ alter table public.concierge_form_responses     enable row level security;
 alter table public.concierge_appointment_state  enable row level security;
 alter table public.concierge_audit_log          enable row level security;
 
+-- Postgres CREATE POLICY does NOT support IF NOT EXISTS in any version,
+-- so we use the drop-then-create pattern to keep the migration
+-- idempotent on re-runs.
+
 -- Form templates are world-readable (no PHI, just question wording)
-create policy if not exists concierge_form_templates_read_all
+drop policy if exists concierge_form_templates_read_all on public.concierge_form_templates;
+create policy concierge_form_templates_read_all
   on public.concierge_form_templates for select
   using (true);
 
 -- A patient can read their own telegram link
-create policy if not exists concierge_telegram_links_self_read
+drop policy if exists concierge_telegram_links_self_read on public.concierge_telegram_links;
+create policy concierge_telegram_links_self_read
   on public.concierge_telegram_links for select
   using (patient_id = auth.uid());
 
 -- A patient can read their own dispatches and responses
-create policy if not exists concierge_dispatches_self_read
+drop policy if exists concierge_dispatches_self_read on public.concierge_form_dispatches;
+create policy concierge_dispatches_self_read
   on public.concierge_form_dispatches for select
   using (patient_id = auth.uid());
 
-create policy if not exists concierge_responses_self_read
+drop policy if exists concierge_responses_self_read on public.concierge_form_responses;
+create policy concierge_responses_self_read
   on public.concierge_form_responses for select
   using (patient_id = auth.uid());
 
@@ -148,19 +156,23 @@ create policy if not exists concierge_responses_self_read
 
 -- Clinic staff (admin) read-all policies — uses the existing
 -- has_role(uuid, app_role) helper from the platform.
-create policy if not exists concierge_responses_admin_read
+drop policy if exists concierge_responses_admin_read on public.concierge_form_responses;
+create policy concierge_responses_admin_read
   on public.concierge_form_responses for select
   using (public.has_role(auth.uid(), 'admin'::public.app_role));
 
-create policy if not exists concierge_dispatches_admin_read
+drop policy if exists concierge_dispatches_admin_read on public.concierge_form_dispatches;
+create policy concierge_dispatches_admin_read
   on public.concierge_form_dispatches for select
   using (public.has_role(auth.uid(), 'admin'::public.app_role));
 
-create policy if not exists concierge_audit_admin_read
+drop policy if exists concierge_audit_admin_read on public.concierge_audit_log;
+create policy concierge_audit_admin_read
   on public.concierge_audit_log for select
   using (public.has_role(auth.uid(), 'admin'::public.app_role));
 
-create policy if not exists concierge_appointment_state_admin_read
+drop policy if exists concierge_appointment_state_admin_read on public.concierge_appointment_state;
+create policy concierge_appointment_state_admin_read
   on public.concierge_appointment_state for select
   using (public.has_role(auth.uid(), 'admin'::public.app_role));
 
