@@ -356,8 +356,10 @@ export class PatientAgent implements DurableObject {
       return
     }
 
+    // Accept 4-10 digits — Supabase OTP length is project-configurable.
+    // The MicroCare project sends 8-digit codes; default Supabase is 6.
     const code = raw.replace(/\D/g, "")
-    if (code.length !== 6) {
+    if (code.length < 4 || code.length > 10) {
       await this.bumpOtpAttempt(pending)
       await sendMessage(this.env, chat_id, t(locale, "otp_invalid"))
       return

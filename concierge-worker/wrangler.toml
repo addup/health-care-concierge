@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 # Non-secret runtime config. Override per-environment as needed.
 [vars]
-PLATFORM_APP_URL = "https://equalcare.example"
+PLATFORM_APP_URL = "https://microcarehub.lovable.app/"
 
 # Durable Object namespace for the per-patient agent.
 [[durable_objects.bindings]]
