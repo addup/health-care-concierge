@@ -1,0 +1,39 @@
+name = "concierge-worker"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object namespace for the per-patient agent.
+[[durable_objects.bindings]]
+name = "PATIENT_AGENT"
+class_name = "PatientAgent"
+
+# DOs are billed-cheap when SQLite-backed. Phase 0 = first migration.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PatientAgent"]
+
+# Workers AI: used by the intent classifier (Phase 2) and triage (Phase 3).
+[ai]
+binding = "AI"
+
+# Vectorize index for FAQ embeddings (Phase 2).
+# Create with: wrangler vectorize create concierge-faq --dimensions=1024 --metric=cosine
+[[vectorize]]
+binding = "FAQ_INDEX"
+index_name = "concierge-faq"
+
+# KV for short-id ↔ uuid mappings used in Telegram callback_data (≤ 64 bytes).
+# Create with: wrangler kv namespace create CONCIERGE_KV
+# Then paste the resulting id below.
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_ME_KV_NAMESPACE_ID"
+
+# Secrets (set via `wrangler secret put`, not committed):
+#   TELEGRAM_BOT_TOKEN
+#   SUPABASE_URL
+#   SUPABASE_ANON_KEY
+#   SUPABASE_SERVICE_KEY
+#
+# For local `wrangler dev` use a .dev.vars file (also gitignored).

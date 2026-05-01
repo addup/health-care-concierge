@@ -1,0 +1,23 @@
+name = "scheduler-worker"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Hourly cron — drives reminders, dispatches, abandonment.
+[triggers]
+crons = ["0 * * * *"]
+
+# Service binding to the concierge-worker so the scheduler can push
+# messages into specific PatientAgent DOs without re-implementing
+# Telegram routing.
+[[services]]
+binding = "CONCIERGE"
+service = "concierge-worker"
+
+# Secrets (set via `wrangler secret put`):
+#   TELEGRAM_BOT_TOKEN     (kept here too in case we send directly)
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_KEY   (no anon key — scheduler always service role)
+#   ADMIN_SECRET           (gates /admin/cron/run for the demo)
+#
+# For local `wrangler dev` use a .dev.vars file (also gitignored).

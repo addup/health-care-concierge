@@ -1,0 +1,7 @@
+# Local-only secrets for `wrangler dev`. Copy to .dev.vars and fill in.
+# Never commit .dev.vars (it's gitignored at the repo root).
+
+TELEGRAM_BOT_TOKEN=
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_KEY=

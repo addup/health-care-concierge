@@ -1,5 +1,6 @@
-# Claude Code local settings
+# Claude Code local settings + transient state
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # OS
 .DS_Store
@@ -15,6 +16,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+.dev.vars
 
 # Node (for when the Workers code lands)
 node_modules/

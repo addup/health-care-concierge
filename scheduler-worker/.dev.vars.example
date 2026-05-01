@@ -1,0 +1,6 @@
+# Local-only secrets for `wrangler dev`. Copy to .dev.vars and fill in.
+
+TELEGRAM_BOT_TOKEN=
+SUPABASE_URL=
+SUPABASE_SERVICE_KEY=
+ADMIN_SECRET=
