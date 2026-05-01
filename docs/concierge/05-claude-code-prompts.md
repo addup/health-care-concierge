@@ -410,8 +410,8 @@ has_role(auth.uid(), 'admin') gate, but that's deferred.
 3. Routing: react-router-dom. Two routes /proms and /prems plus a
    simple top-nav. PT-PT UI throughout.
 
-4. Build & run: `bun run dev` (or npm run dev) at dashboard/.
-   Local-only — no deploy, no auth.
+4. Build & run: `bun run dev` at dashboard/. Local-only — no deploy,
+   no auth.
 
 Test: open the dashboard locally, both pages load, the seed patients
 show up. Don't ship this past localhost.

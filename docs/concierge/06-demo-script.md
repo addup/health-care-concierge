@@ -5,8 +5,8 @@
 ## Pre-flight (do once before going live)
 
 1. Migration applied to Supabase, secrets set (see README "Quick start").
-2. `cd scripts && npm install && npm run seed` — populates 10 patients, 30 appointments, 90+ form responses.
-3. `cd dashboard && npm run dev` — local dashboard on http://localhost:5180.
+2. `cd scripts && bun install && bun run seed` — populates 10 patients, 30 appointments, 90+ form responses.
+3. `cd dashboard && bun install && bun run dev` — local dashboard on http://localhost:5180.
 4. `cd concierge-worker && wrangler dev` (or deploy + setup-webhook). Telegram bot reachable.
 5. Pedro's real Telegram account swapped into `concierge_telegram_links` for ID `1000000010` (the João Ribeiro slot — has a future appointment for the 24h-reminder act).
 

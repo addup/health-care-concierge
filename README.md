@@ -21,20 +21,28 @@ Conversational concierge for the [EqualCare](https://github.com/addup/equal-care
 
 [`addup/equal-care-platform`](https://github.com/addup/equal-care-platform) — the existing Lovable-generated Vite + React SPA. We **do not modify** it; the only contact surface is the shared Supabase project.
 
+## Toolchain
+
+[Bun](https://bun.sh) for everything node-shaped (workers, dashboard, seed scripts). Each subproject has its own `package.json` and `bun.lock`. Install bun once:
+
+```bash
+brew install oven-sh/bun/bun
+```
+
 ## Quick start (once Phase 0 is complete locally)
 
 ```bash
 # Concierge Worker
 cd concierge-worker
 cp .dev.vars.example .dev.vars   # then fill in
-npm install
-npm run dev
+bun install
+bun run dev
 
 # Scheduler Worker (separate terminal)
 cd scheduler-worker
 cp .dev.vars.example .dev.vars
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 Before either Worker can do useful work you need to:
