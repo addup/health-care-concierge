@@ -1,0 +1,1 @@
+{"root":["./src/vite-env.d.ts","./src/lib/supabase.ts","./src/app.tsx","./src/main.tsx","./src/pages/premspage.tsx","./src/pages/promspage.tsx","../shared/db-types-concierge.ts","../shared/db-types.ts","../shared/eq5d5l-scoring.ts"],"version":"5.9.3"}
