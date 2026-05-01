@@ -43,6 +43,20 @@ type StringKey =
   | "date_dow_4"
   | "date_dow_5"
   | "date_dow_6"
+  | "list_empty"
+  | "list_header"
+  | "appt_line"
+  | "manage_pick_appt_reschedule"
+  | "manage_pick_appt_cancel"
+  | "manage_no_upcoming"
+  | "cancel_confirm_prompt"
+  | "cancel_confirm_yes"
+  | "cancel_confirm_no"
+  | "cancel_done"
+  | "cancel_kept"
+  | "cancel_failed"
+  | "reschedule_done"
+  | "reschedule_failed"
 
 const STRINGS: Record<Locale, Record<StringKey, string>> = {
   pt: {
@@ -78,7 +92,21 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     date_dow_3: "Qua",
     date_dow_4: "Qui",
     date_dow_5: "Sex",
-    date_dow_6: "Sáb"
+    date_dow_6: "Sáb",
+    list_empty: "Não tens consultas marcadas.",
+    list_header: "As tuas consultas:",
+    appt_line: "• {when} — {type} com {doctor}",
+    manage_pick_appt_reschedule: "Qual consulta queres reagendar?",
+    manage_pick_appt_cancel: "Qual consulta queres cancelar?",
+    manage_no_upcoming: "Não tens consultas futuras para gerir.",
+    cancel_confirm_prompt: "Cancelar {when} — {type}?",
+    cancel_confirm_yes: "Sim, cancelar",
+    cancel_confirm_no: "Não, manter",
+    cancel_done: "✅ Consulta cancelada.",
+    cancel_kept: "Mantive a consulta.",
+    cancel_failed: "Não consegui cancelar agora. Tenta outra vez.",
+    reschedule_done: "✅ Reagendado para {when}.",
+    reschedule_failed: "Não consegui reagendar agora. Tenta outra vez."
   },
   en: {
     welcome_unlinked: "Hi! I'm the EQUAL Care concierge. To identify you, what's your email?",
@@ -113,7 +141,21 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     date_dow_3: "Wed",
     date_dow_4: "Thu",
     date_dow_5: "Fri",
-    date_dow_6: "Sat"
+    date_dow_6: "Sat",
+    list_empty: "You have no upcoming appointments.",
+    list_header: "Your appointments:",
+    appt_line: "• {when} — {type} with {doctor}",
+    manage_pick_appt_reschedule: "Which appointment do you want to reschedule?",
+    manage_pick_appt_cancel: "Which appointment do you want to cancel?",
+    manage_no_upcoming: "You have no upcoming appointments to manage.",
+    cancel_confirm_prompt: "Cancel {when} — {type}?",
+    cancel_confirm_yes: "Yes, cancel",
+    cancel_confirm_no: "No, keep it",
+    cancel_done: "✅ Appointment cancelled.",
+    cancel_kept: "I kept the appointment.",
+    cancel_failed: "I couldn't cancel right now. Try again.",
+    reschedule_done: "✅ Rescheduled to {when}.",
+    reschedule_failed: "I couldn't reschedule right now. Try again."
   }
 }
 

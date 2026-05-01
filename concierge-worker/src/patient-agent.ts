@@ -19,6 +19,16 @@ import {
   handleDateChoice,
   handleSlotChoice
 } from "./booking"
+import {
+  listMyAppointments,
+  startReschedule,
+  handleReschedulePick,
+  handleRescheduleDate,
+  handleRescheduleSlot,
+  startCancel,
+  handleCancelPick,
+  handleCancelConfirm
+} from "./appointments"
 
 interface AuthState {
   patient_id: string
@@ -89,8 +99,12 @@ export class PatientAgent implements DurableObject {
       return
     }
     if (text.startsWith("/cancel") || text.startsWith("/reset")) {
-      await this.state.storage.delete("pending_otp")
-      await this.state.storage.delete("booking_state")
+      await this.state.storage.delete([
+        "pending_otp",
+        "booking_state",
+        "reschedule_state",
+        "cancel_state"
+      ])
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
     }
@@ -164,9 +178,24 @@ export class PatientAgent implements DurableObject {
           classified.entities.specialty
         )
         return
-      case "RESCHEDULE":
-      case "CANCEL":
       case "LIST_APPOINTMENTS":
+        await listMyAppointments(this.env, chat_id, locale, {
+          patient_id: auth.patient_id,
+          access_token: auth.access_token
+        })
+        return
+      case "RESCHEDULE":
+        await startReschedule(this.env, this.state.storage, chat_id, locale, {
+          patient_id: auth.patient_id,
+          access_token: auth.access_token
+        })
+        return
+      case "CANCEL":
+        await startCancel(this.env, this.state.storage, chat_id, locale, {
+          patient_id: auth.patient_id,
+          access_token: auth.access_token
+        })
+        return
       case "FAQ":
       case "TRIAGE":
       case "FORM_RESPONSE":
@@ -348,7 +377,11 @@ export class PatientAgent implements DurableObject {
             await startBooking(this.env, this.state.storage, chat_id, locale, ctx)
             return
           }
-          // list / faq → Phase 2c / 2d
+          if (payload === "list") {
+            await listMyAppointments(this.env, chat_id, locale, ctx)
+            return
+          }
+          // faq → Phase 2d
           await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
           return
         case "s":
@@ -362,6 +395,25 @@ export class PatientAgent implements DurableObject {
           return
         case "b":
           await handleSlotChoice(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        // Reschedule
+        case "rp":
+          await handleReschedulePick(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        case "rd":
+          await handleRescheduleDate(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        case "rs":
+          await handleRescheduleSlot(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        // Cancel
+        case "xp":
+          await handleCancelPick(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        case "xc":
+          if (payload === "0" || payload === "1") {
+            await handleCancelConfirm(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          }
           return
         default:
           await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
