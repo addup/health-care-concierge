@@ -64,6 +64,10 @@ type StringKey =
   | "triage_handoff_soon"
   | "triage_failed"
   | "triage_max_turns"
+  | "agent_llm_failed"
+  | "agent_iter_cap"
+  | "agent_choice_expired"
+  | "agent_fallback_to_deterministic"
 
 const STRINGS: Record<Locale, Record<StringKey, string>> = {
   pt: {
@@ -120,7 +124,11 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     triage_handoff_routine: "Sugiro {specialty}. Vou mostrar-te os horários disponíveis.",
     triage_handoff_soon: "Sugiro {specialty} o mais cedo possível. Vou mostrar-te os horários disponíveis.",
     triage_failed: "Não consegui fazer a triagem. Posso marcar Medicina Geral?",
-    triage_max_turns: "Para garantir, vou marcar Medicina Geral — descreves tudo na consulta."
+    triage_max_turns: "Para garantir, vou marcar Medicina Geral — descreves tudo na consulta.",
+    agent_llm_failed: "Não consegui processar a tua mensagem agora. Podes tentar de outra forma?",
+    agent_iter_cap: "Estou um pouco confuso. Vamos recomeçar — diz-me em poucas palavras o que precisas.",
+    agent_choice_expired: "Essa opção já expirou. Diz-me outra vez o que pretendes.",
+    agent_fallback_to_deterministic: "Estou com dificuldades agora. Tenta usar o botão *Marcar consulta* no menu — /start para voltar a vê-lo."
   },
   en: {
     welcome_unlinked: "Hi! I'm the EQUAL Care concierge. To identify you, what's your email?",
@@ -176,7 +184,11 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     triage_handoff_routine: "I suggest {specialty}. Let me show you available slots.",
     triage_handoff_soon: "I suggest {specialty} as soon as possible. Let me show you available slots.",
     triage_failed: "I couldn't run triage right now. Should I book General Medicine?",
-    triage_max_turns: "To be safe I'll book General Medicine — you can describe everything in person."
+    triage_max_turns: "To be safe I'll book General Medicine — you can describe everything in person.",
+    agent_llm_failed: "I couldn't process your message right now. Want to try rewording it?",
+    agent_iter_cap: "I'm a bit confused. Let's restart — tell me briefly what you need.",
+    agent_choice_expired: "That option has expired. Tell me again what you'd like.",
+    agent_fallback_to_deterministic: "I'm having trouble. Try the *Book a consultation* button on the menu — /start to see it again."
   }
 }
 

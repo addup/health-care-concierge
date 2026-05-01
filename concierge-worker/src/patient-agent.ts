@@ -30,13 +30,17 @@ import {
   handleCancelConfirm
 } from "./appointments"
 import { faqLookup } from "./faq"
-import { startTriage, handleTriageReply, type TriageState } from "./triage"
 import {
   startForm,
   handleAnswerCallback as handleFormAnswer,
   handleText as handleFormText
 } from "./forms/runner"
 import type { FormState } from "./forms/types"
+import {
+  handleAgentText,
+  handleAgentCallback,
+  type AgentState
+} from "./agent"
 
 interface AuthState {
   patient_id: string
@@ -142,8 +146,8 @@ export class PatientAgent implements DurableObject {
         "booking_state",
         "reschedule_state",
         "cancel_state",
-        "triage_state",
-        "form_state"
+        "form_state",
+        "agent_state"
       ])
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
@@ -157,8 +161,8 @@ export class PatientAgent implements DurableObject {
         "booking_state",
         "reschedule_state",
         "cancel_state",
-        "triage_state",
-        "form_state"
+        "form_state",
+        "agent_state"
       ])
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
@@ -191,19 +195,19 @@ export class PatientAgent implements DurableObject {
     }
 
     // Mid-form hijack: free text is a free_text answer to the current
-    // form question. Forms always take priority over triage and intent
-    // because they are time-bounded surveys.
+    // form question. Forms always take priority because they are
+    // time-bounded surveys.
     const formState = await this.state.storage.get<FormState>("form_state")
     if (formState?.awaiting_text) {
       await handleFormText(this.env, this.state.storage, chat_id, locale, text)
       return
     }
 
-    // Mid-triage hijack: while triage_state is set, free text is the
-    // patient's reply to the bot's question, NOT a new intent.
-    const triageState = await this.state.storage.get<TriageState>("triage_state")
-    if (triageState) {
-      await handleTriageReply(
+    // Mid-agent hijack: free text mid-conversation is the patient's reply
+    // to the agent's last prompt.
+    const agentState = await this.state.storage.get<AgentState>("agent_state")
+    if (agentState) {
+      await handleAgentText(
         this.env,
         this.state.storage,
         chat_id,
@@ -249,13 +253,17 @@ export class PatientAgent implements DurableObject {
         await this.greetLinked(chat_id, locale, auth.chosen_name)
         return
       case "BOOK":
-        await startBooking(
+      case "TRIAGE":
+        // Free-text BOOK and TRIAGE both go through the conversational
+        // agent. The deterministic 5-step booking flow is reserved for
+        // the menu button (callback "menu:book").
+        await handleAgentText(
           this.env,
           this.state.storage,
           chat_id,
           locale,
           { patient_id: auth.patient_id, access_token: auth.access_token },
-          classified.entities.specialty
+          rawText
         )
         return
       case "LIST_APPOINTMENTS":
@@ -278,16 +286,6 @@ export class PatientAgent implements DurableObject {
         return
       case "FAQ":
         await faqLookup(this.env, chat_id, rawText, locale)
-        return
-      case "TRIAGE":
-        await startTriage(
-          this.env,
-          this.state.storage,
-          chat_id,
-          locale,
-          { patient_id: auth.patient_id, access_token: auth.access_token },
-          rawText
-        )
         return
       case "FORM_RESPONSE":
       case "OTHER":
@@ -559,6 +557,18 @@ export class PatientAgent implements DurableObject {
           if (payload === "0" || payload === "1") {
             await handleCancelConfirm(this.env, this.state.storage, chat_id, locale, ctx, payload)
           }
+          return
+        // Agent button taps: payload is the 10-char short id stashed by
+        // present_choices/confirm_booking in agent-tools.ts.
+        case "ag":
+          await handleAgentCallback(
+            this.env,
+            this.state.storage,
+            chat_id,
+            locale,
+            ctx,
+            payload
+          )
           return
         // Form answers: callback format `f:<dispatch>:q:<idx>:a:<val>`.
         // Whole `cb.data` is what we have; payload here is everything
