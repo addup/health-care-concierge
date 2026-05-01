@@ -318,7 +318,7 @@ export class PatientAgent implements DurableObject {
       const svc = serviceClient(this.env)
       const { data: profile, error } = await svc
         .from("profiles")
-        .select("chosen_name, registration_completed")
+        .select("chosen_name, registration_completed, preferred_language")
         .eq("id", auth.patient_id)
         .maybeSingle()
       console.log(JSON.stringify({
@@ -334,6 +334,11 @@ export class PatientAgent implements DurableObject {
           registration_completed: true
         }
         await this.state.storage.put("auth", updated)
+        // Sync locale with the patient's preference each /start.
+        const preferred = profile.preferred_language === "en" ? "en" : "pt"
+        if (preferred !== locale) {
+          await this.state.storage.put("locale", preferred as Locale)
+        }
         // Make sure the Telegram link exists so the router finds the right DO.
         await svc.rpc("concierge_link_telegram", {
           p_telegram_user_id: chat_id,
@@ -455,7 +460,7 @@ export class PatientAgent implements DurableObject {
     const svc = serviceClient(this.env)
     const { data: profile, error: profileError } = await svc
       .from("profiles")
-      .select("chosen_name, registration_completed")
+      .select("chosen_name, registration_completed, preferred_language")
       .eq("id", patient_id)
       .maybeSingle()
 
@@ -468,6 +473,14 @@ export class PatientAgent implements DurableObject {
 
     const chosen_name = profile?.chosen_name ?? null
     const registration_completed = profile?.registration_completed ?? false
+
+    // Adopt the patient's stored language preference as our DO locale.
+    // Overrides whatever heuristic detected from the first text.
+    const preferred = profile?.preferred_language === "en" ? "en" : "pt"
+    if (preferred !== locale) {
+      locale = preferred as Locale
+      await this.state.storage.put("locale", locale)
+    }
 
     const authState: AuthState = {
       patient_id,
