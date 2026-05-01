@@ -326,31 +326,90 @@ async function toolListSlots(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
 async function toolPresentChoices(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
   const prompt = String(args.prompt_pt ?? "")
   const kind = String(args.kind ?? "")
-  const options = Array.isArray(args.options) ? args.options : []
-  if (!prompt || !kind || options.length === 0) {
+  const rawOptions = Array.isArray(args.options) ? args.options : []
+  if (!prompt || !kind || rawOptions.length === 0) {
     return {
       data: {
         error: "invalid_present_choices_args",
-        hint: "Required: prompt_pt (non-empty), kind (specialty|appointment_type|date|slot|doctor), options (non-empty array of {id, label}). For specialty options, call list_specialties FIRST to get real ids, do NOT invent ids.",
-        got: { prompt_len: prompt.length, kind, options_len: options.length }
+        hint: "Required: prompt_pt (non-empty), kind (specialty|appointment_type|date|slot|doctor), options (non-empty array of {id, label}). Use REAL ids from the database, never invent.",
+        got: { prompt_len: prompt.length, kind, options_len: rawOptions.length }
       }
     }
   }
-  if (options.length > 12) options.length = 12  // Telegram practical limit
+
+  // Validate option ids against the database for the kinds that map to
+  // real records. Otherwise the LLM can hallucinate specialty/type/doctor
+  // names ("Alergologia", "Neurologia") that don't exist in the clinic.
+  const validIds = await loadValidIds(ctx, kind)
+  if (validIds !== null) {
+    const filtered = rawOptions.filter((opt) => {
+      const id = String((opt as { id?: unknown }).id ?? "")
+      // Allow "other" as an escape-hatch for kind=specialty so the LLM
+      // can offer "Quero outra opção" without inventing a specialty.
+      if (kind === "specialty" && id === "other") return true
+      return validIds.has(id)
+    })
+    if (filtered.length === 0) {
+      return {
+        data: {
+          error: "no_valid_options",
+          hint: `Para kind="${kind}", todos os ids têm de existir na base de dados. Nenhum dos ids fornecidos é válido. Não inventes ids — usa exactamente os UUIDs do system prompt (especialidades) ou os retornados por list_appointment_types / list_doctors.`,
+          provided_ids: rawOptions.map((o) => String((o as { id?: unknown }).id ?? "")),
+          valid_ids_sample: Array.from(validIds).slice(0, 10)
+        }
+      }
+    }
+    if (filtered.length < rawOptions.length) {
+      console.log(JSON.stringify({
+        tag: "agent-options-filtered",
+        kind,
+        provided: rawOptions.length,
+        kept: filtered.length,
+        dropped_ids: rawOptions
+          .filter((o) => !validIds.has(String((o as { id?: unknown }).id ?? "")) &&
+                        !(kind === "specialty" && String((o as { id?: unknown }).id ?? "") === "other"))
+          .map((o) => String((o as { id?: unknown }).id ?? ""))
+      }))
+    }
+    rawOptions.length = 0
+    rawOptions.push(...filtered)
+  }
+
+  if (rawOptions.length > 12) rawOptions.length = 12  // Telegram practical limit
 
   const inline_keyboard: ReplyMarkup["inline_keyboard"] = []
-  const mapping: Record<string, { kind: string; id: string; label: string }> = {}
-  for (const opt of options) {
+  for (const opt of rawOptions) {
     const o = opt as { id?: unknown; label?: unknown }
     const id = String(o.id ?? "")
     const label = String(o.label ?? "")
     if (!id || !label) continue
     const short = await putShortId(ctx.env, { kind, id, label })
-    mapping[short] = { kind, id, label }
     inline_keyboard.push([{ text: label.slice(0, 60), callback_data: `ag:${short}` }])
   }
   await sendMessage(ctx.env, ctx.chat_id, prompt, { inline_keyboard })
-  return { data: { rendered: true, kind, count: options.length }, ends_turn: true }
+  return { data: { rendered: true, kind, count: rawOptions.length }, ends_turn: true }
+}
+
+/**
+ * Returns a set of valid ids for the given choice kind, or null if the
+ * kind doesn't map to a fixed DB enumeration (date / slot — those flow
+ * directly from earlier tool calls).
+ */
+async function loadValidIds(ctx: ToolCtx, kind: string): Promise<Set<string> | null> {
+  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  if (kind === "specialty") {
+    const { data } = await sb.from("specialties").select("id").eq("is_active", true)
+    return new Set((data ?? []).map((r) => r.id))
+  }
+  if (kind === "appointment_type") {
+    const { data } = await sb.from("appointment_types").select("id").eq("is_active", true)
+    return new Set((data ?? []).map((r) => r.id))
+  }
+  if (kind === "doctor") {
+    const { data } = await sb.from("doctors").select("id").eq("is_active", true)
+    return new Set((data ?? []).map((r) => r.id))
+  }
+  return null  // date, slot — caller-provided strings, no fixed enum
 }
 
 async function toolConfirmBooking(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
