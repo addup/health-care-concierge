@@ -34,7 +34,7 @@ export async function faqLookup(
     return
   }
 
-  const result = await env.FAQ_INDEX.query(vector, {
+  const result = await env.VECTORIZE.query(vector, {
     topK: TOP_K,
     returnMetadata: "all"
     // No language filter — bge-m3 is multilingual; cosine handles cross-lang well.
@@ -129,7 +129,7 @@ export async function seedFaqCorpus(env: Env): Promise<{ inserted: number }> {
   // Record<string, VectorizeVectorMetadata> shape — the runtime data
   // is just JSON in the vector index.
   if (vectors.length > 0) {
-    await env.FAQ_INDEX.upsert(vectors as unknown as VectorizeVector[])
+    await env.VECTORIZE.upsert(vectors as unknown as VectorizeVector[])
   }
   return { inserted: vectors.length }
 }

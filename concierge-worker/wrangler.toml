@@ -24,15 +24,15 @@ binding = "AI"
 # Vectorize index for FAQ embeddings (Phase 2).
 # Create with: wrangler vectorize create concierge-faq --dimensions=1024 --metric=cosine
 [[vectorize]]
-binding = "FAQ_INDEX"
+binding = "VECTORIZE"
 index_name = "concierge-faq"
 
 # KV for short-id ↔ uuid mappings used in Telegram callback_data (≤ 64 bytes).
 # Create with: wrangler kv namespace create CONCIERGE_KV
 # Then paste the resulting id below.
 [[kv_namespaces]]
-binding = "KV"
-id = "REPLACE_ME_KV_NAMESPACE_ID"
+binding = "CONCIERGE_KV"
+id = "ccaba27e07134baabf34b3cfd4f486d0"
 
 # Secrets (set via `wrangler secret put`, not committed):
 #   TELEGRAM_BOT_TOKEN

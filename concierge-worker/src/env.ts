@@ -8,10 +8,10 @@ export interface Env {
   AI: Ai
 
   // Vectorize FAQ index
-  FAQ_INDEX: VectorizeIndex
+  VECTORIZE: VectorizeIndex
 
   // KV namespace for short-id ↔ uuid mappings
-  KV: KVNamespace
+  CONCIERGE_KV: KVNamespace
 
   // Non-secret vars (wrangler.toml [vars])
   PLATFORM_APP_URL: string

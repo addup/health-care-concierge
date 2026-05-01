@@ -29,14 +29,14 @@ export async function putShortId(
   ttlSeconds: number = DEFAULT_TTL_SECONDS
 ): Promise<string> {
   const id = nanoid10()
-  await env.KV.put(`${KV_PREFIX}${id}`, JSON.stringify(value), {
+  await env.CONCIERGE_KV.put(`${KV_PREFIX}${id}`, JSON.stringify(value), {
     expirationTtl: ttlSeconds
   })
   return id
 }
 
 export async function getShortId<T = unknown>(env: Env, id: string): Promise<T | null> {
-  const raw = await env.KV.get(`${KV_PREFIX}${id}`)
+  const raw = await env.CONCIERGE_KV.get(`${KV_PREFIX}${id}`)
   if (raw === null) return null
   try {
     return JSON.parse(raw) as T
