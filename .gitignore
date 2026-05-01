@@ -1,6 +1,7 @@
 # Claude Code local settings + transient state
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # OS
 .DS_Store
