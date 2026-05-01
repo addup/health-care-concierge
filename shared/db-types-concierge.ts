@@ -11,6 +11,156 @@ import type { Database as PlatformDatabase, Json } from "./db-types"
 
 type Public = PlatformDatabase["public"]
 
+type ConciergeTables = {
+  concierge_telegram_links: {
+    Row: { telegram_user_id: number; patient_id: string; linked_at: string; last_active_at: string; locale: string }
+    Insert: { telegram_user_id: number; patient_id: string; linked_at?: string; last_active_at?: string; locale?: string }
+    Update: Partial<{ telegram_user_id: number; patient_id: string; linked_at: string; last_active_at: string; locale: string }>
+    Relationships: []
+  }
+  concierge_form_templates: {
+    Row: { id: string; kind: string; name: string; schema: Json; version: number; created_at: string }
+    Insert: { id: string; kind: string; name: string; schema: Json; version?: number; created_at?: string }
+    Update: Partial<{ id: string; kind: string; name: string; schema: Json; version: number; created_at: string }>
+    Relationships: []
+  }
+  concierge_form_dispatches: {
+    Row: {
+      id: string
+      appointment_id: string
+      patient_id: string
+      template_id: string
+      schedule_label: string
+      scheduled_for: string
+      sent_at: string | null
+      reminder_count: number
+      last_reminder_at: string | null
+      completed_at: string | null
+      abandoned_at: string | null
+      channel: string
+      created_at: string
+    }
+    Insert: {
+      id: string
+      appointment_id: string
+      patient_id: string
+      template_id: string
+      schedule_label: string
+      scheduled_for: string
+      sent_at?: string | null
+      reminder_count?: number
+      last_reminder_at?: string | null
+      completed_at?: string | null
+      abandoned_at?: string | null
+      channel?: string
+      created_at?: string
+    }
+    Update: Partial<{
+      id: string
+      appointment_id: string
+      patient_id: string
+      template_id: string
+      schedule_label: string
+      scheduled_for: string
+      sent_at: string | null
+      reminder_count: number
+      last_reminder_at: string | null
+      completed_at: string | null
+      abandoned_at: string | null
+      channel: string
+      created_at: string
+    }>
+    Relationships: []
+  }
+  concierge_form_responses: {
+    Row: {
+      id: string
+      dispatch_id: string
+      patient_id: string
+      template_id: string
+      answers: Json
+      score: Json
+      completed_at: string
+    }
+    Insert: {
+      id?: string
+      dispatch_id: string
+      patient_id: string
+      template_id: string
+      answers: Json
+      score: Json
+      completed_at?: string
+    }
+    Update: Partial<{
+      id: string
+      dispatch_id: string
+      patient_id: string
+      template_id: string
+      answers: Json
+      score: Json
+      completed_at: string
+    }>
+    Relationships: []
+  }
+  concierge_appointment_state: {
+    Row: {
+      appointment_id: string
+      reminder_sent_at: string | null
+      prem_dispatched_at: string | null
+      prom_t7_dispatched_at: string | null
+      prom_t28_dispatched_at: string | null
+      updated_at: string
+    }
+    Insert: {
+      appointment_id: string
+      reminder_sent_at?: string | null
+      prem_dispatched_at?: string | null
+      prom_t7_dispatched_at?: string | null
+      prom_t28_dispatched_at?: string | null
+      updated_at?: string
+    }
+    Update: Partial<{
+      appointment_id: string
+      reminder_sent_at: string | null
+      prem_dispatched_at: string | null
+      prom_t7_dispatched_at: string | null
+      prom_t28_dispatched_at: string | null
+      updated_at: string
+    }>
+    Relationships: []
+  }
+  concierge_audit_log: {
+    Row: {
+      id: string
+      patient_id: string | null
+      telegram_user_id: number | null
+      intent: string | null
+      action: string
+      payload: Json | null
+      created_at: string
+    }
+    Insert: {
+      id?: string
+      patient_id?: string | null
+      telegram_user_id?: number | null
+      intent?: string | null
+      action: string
+      payload?: Json | null
+      created_at?: string
+    }
+    Update: Partial<{
+      id: string
+      patient_id: string | null
+      telegram_user_id: number | null
+      intent: string | null
+      action: string
+      payload: Json | null
+      created_at: string
+    }>
+    Relationships: []
+  }
+}
+
 type ConciergeFunctions = {
   concierge_link_telegram: {
     Args: { p_telegram_user_id: number; p_patient_id: string; p_locale?: string }
@@ -67,8 +217,9 @@ type ConciergeFunctions = {
 }
 
 export type Database = Omit<PlatformDatabase, "public"> & {
-  public: Omit<Public, "Functions"> & {
+  public: Omit<Public, "Functions" | "Tables"> & {
     Functions: Public["Functions"] & ConciergeFunctions
+    Tables: Public["Tables"] & ConciergeTables
   }
 }
 

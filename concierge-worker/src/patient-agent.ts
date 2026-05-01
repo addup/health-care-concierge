@@ -31,6 +31,12 @@ import {
 } from "./appointments"
 import { faqLookup } from "./faq"
 import { startTriage, handleTriageReply, type TriageState } from "./triage"
+import {
+  startForm,
+  handleAnswerCallback as handleFormAnswer,
+  handleText as handleFormText
+} from "./forms/runner"
+import type { FormState } from "./forms/types"
 
 interface AuthState {
   patient_id: string
@@ -63,26 +69,56 @@ export class PatientAgent implements DurableObject {
     if (request.method !== "POST") {
       return new Response("method-not-allowed", { status: 405 })
     }
-    let body: { update?: TelegramUpdate }
+    let body: {
+      update?: TelegramUpdate
+      dispatch?: {
+        type: "form_dispatch" | "reminder"
+        chat_id: number
+        dispatch_id?: string
+        text?: string  // pre-rendered reminder text, used by Phase 5
+      }
+    }
     try {
-      body = (await request.json()) as { update?: TelegramUpdate }
+      body = (await request.json()) as typeof body
     } catch {
       return new Response("bad-request", { status: 400 })
     }
-    if (!body.update) return new Response("bad-request", { status: 400 })
-    const update = body.update
 
     try {
-      if (update.message) {
-        await this.handleMessage(update.message)
-      } else if (update.callback_query) {
-        await this.handleCallback(update.callback_query)
+      if (body.update) {
+        if (body.update.message) await this.handleMessage(body.update.message)
+        else if (body.update.callback_query) await this.handleCallback(body.update.callback_query)
+      } else if (body.dispatch) {
+        await this.handleExternalDispatch(body.dispatch)
+      } else {
+        return new Response("bad-request", { status: 400 })
       }
     } catch (err) {
       // Don't let one bad turn poison the chat — log and ack.
       console.error("PatientAgent.fetch error", err)
     }
     return new Response("ok", { status: 200 })
+  }
+
+  private async handleExternalDispatch(d: {
+    type: "form_dispatch" | "reminder"
+    chat_id: number
+    dispatch_id?: string
+    text?: string
+  }): Promise<void> {
+    const locale = (await this.state.storage.get<Locale>("locale")) ?? DEFAULT_LOCALE
+
+    if (d.type === "form_dispatch" && d.dispatch_id) {
+      // Drop any in-flight conversational state — a dispatched form
+      // takes the whole turn.
+      await this.state.storage.delete(["booking_state", "reschedule_state", "cancel_state", "triage_state"])
+      await startForm(this.env, this.state.storage, d.chat_id, locale, d.dispatch_id)
+      return
+    }
+    if (d.type === "reminder" && d.text) {
+      await sendMessage(this.env, d.chat_id, d.text)
+      return
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -106,7 +142,8 @@ export class PatientAgent implements DurableObject {
         "booking_state",
         "reschedule_state",
         "cancel_state",
-        "triage_state"
+        "triage_state",
+        "form_state"
       ])
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
@@ -135,6 +172,15 @@ export class PatientAgent implements DurableObject {
         chat_id,
         t(locale, "registration_incomplete", { app_url: this.env.PLATFORM_APP_URL })
       )
+      return
+    }
+
+    // Mid-form hijack: free text is a free_text answer to the current
+    // form question. Forms always take priority over triage and intent
+    // because they are time-bounded surveys.
+    const formState = await this.state.storage.get<FormState>("form_state")
+    if (formState?.awaiting_text) {
+      await handleFormText(this.env, this.state.storage, chat_id, locale, text)
       return
     }
 
@@ -445,6 +491,26 @@ export class PatientAgent implements DurableObject {
             await handleCancelConfirm(this.env, this.state.storage, chat_id, locale, ctx, payload)
           }
           return
+        // Form answers: callback format `f:<dispatch>:q:<idx>:a:<val>`.
+        // Whole `cb.data` is what we have; payload here is everything
+        // after the first ":". Re-parse properly.
+        case "f": {
+          const parts = cb.data.split(":")  // [ "f", dispatch, "q", idx, "a", val? ... ]
+          const dispatchId = parts[1]
+          const qIdx = parseInt(parts[3] ?? "", 10)
+          const rawValue = parts.slice(5).join(":")
+          if (!dispatchId || !Number.isFinite(qIdx)) return
+          await handleFormAnswer(
+            this.env,
+            this.state.storage,
+            chat_id,
+            locale,
+            dispatchId,
+            qIdx,
+            rawValue
+          )
+          return
+        }
         default:
           await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
           return
