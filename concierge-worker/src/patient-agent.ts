@@ -1,16 +1,34 @@
 import type { Env } from "./env"
+import {
+  sendMessage,
+  sendChatAction,
+  answerCallbackQuery,
+  type TelegramMessage,
+  type TelegramCallbackQuery,
+  type TelegramUpdate,
+  type ReplyMarkup
+} from "./telegram"
+import { anonClient, serviceClient } from "./supabase"
+import { t, detectLocaleFromText, DEFAULT_LOCALE, type Locale } from "./i18n"
 
-/**
- * Per-patient Durable Object. Holds conversational state across turns.
- *
- * Phase 0: skeleton only — accepts any fetch and returns 200. Phase 1
- * implements the /start + OTP flow; later phases add intent routing,
- * triage, booking, and form runner.
- *
- * State keys (added across phases, see docs/concierge/02-tech-spec.md §2.2):
- *   auth, pending_otp, intent_state, triage_state, form_state,
- *   last_message_at, locale
- */
+interface AuthState {
+  patient_id: string
+  access_token: string
+  refresh_token: string
+  chosen_name: string | null
+  registration_completed: boolean
+  linked_at: string
+}
+
+interface PendingOtpState {
+  email: string
+  attempts: number
+  expires_at: number
+}
+
+const PENDING_OTP_TTL_MS = 10 * 60 * 1000
+const MAX_OTP_ATTEMPTS = 5
+
 export class PatientAgent implements DurableObject {
   private state: DurableObjectState
   private env: Env
@@ -20,10 +38,279 @@ export class PatientAgent implements DurableObject {
     this.env = env
   }
 
-  async fetch(_request: Request): Promise<Response> {
-    return new Response(JSON.stringify({ ok: true, phase: 0 }), {
-      status: 200,
-      headers: { "content-type": "application/json" }
-    })
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST") {
+      return new Response("method-not-allowed", { status: 405 })
+    }
+    let body: { update?: TelegramUpdate }
+    try {
+      body = (await request.json()) as { update?: TelegramUpdate }
+    } catch {
+      return new Response("bad-request", { status: 400 })
+    }
+    if (!body.update) return new Response("bad-request", { status: 400 })
+    const update = body.update
+
+    try {
+      if (update.message) {
+        await this.handleMessage(update.message)
+      } else if (update.callback_query) {
+        await this.handleCallback(update.callback_query)
+      }
+    } catch (err) {
+      // Don't let one bad turn poison the chat — log and ack.
+      console.error("PatientAgent.fetch error", err)
+    }
+    return new Response("ok", { status: 200 })
   }
+
+  // ---------------------------------------------------------------------
+  // Message handling
+  // ---------------------------------------------------------------------
+
+  private async handleMessage(message: TelegramMessage): Promise<void> {
+    if (!message.text) return
+    const chat_id = message.chat.id
+    const text = message.text.trim()
+
+    const locale = await this.ensureLocale(text)
+
+    if (text.startsWith("/start")) {
+      await this.handleStart(chat_id, locale)
+      return
+    }
+    if (text.startsWith("/cancel") || text.startsWith("/reset")) {
+      await this.state.storage.delete("pending_otp")
+      await sendMessage(this.env, chat_id, t(locale, "reset_state"))
+      return
+    }
+    if (text.startsWith("/help")) {
+      await sendMessage(this.env, chat_id, t(locale, "welcome_unlinked"))
+      return
+    }
+
+    const pending = await this.state.storage.get<PendingOtpState>("pending_otp")
+    if (pending) {
+      await this.handleOtpAttempt(chat_id, locale, pending, text)
+      return
+    }
+
+    const auth = await this.state.storage.get<AuthState>("auth")
+    if (!auth) {
+      // No auth yet — treat free text as an email attempt.
+      await this.handleEmailEntry(chat_id, locale, text)
+      return
+    }
+
+    if (!auth.registration_completed) {
+      await sendMessage(
+        this.env,
+        chat_id,
+        t(locale, "registration_incomplete", { app_url: this.env.PLATFORM_APP_URL })
+      )
+      return
+    }
+
+    // Authed + registration_completed = true. Phase 1 stub.
+    await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+  }
+
+  private async handleStart(chat_id: number, locale: Locale): Promise<void> {
+    const auth = await this.state.storage.get<AuthState>("auth")
+    if (auth?.registration_completed) {
+      await this.greetLinked(chat_id, locale, auth.chosen_name)
+      return
+    }
+    if (auth && !auth.registration_completed) {
+      await sendMessage(
+        this.env,
+        chat_id,
+        t(locale, "registration_incomplete", { app_url: this.env.PLATFORM_APP_URL })
+      )
+      return
+    }
+    await this.state.storage.delete("pending_otp")
+    await sendMessage(this.env, chat_id, t(locale, "welcome_unlinked"))
+  }
+
+  private async handleEmailEntry(
+    chat_id: number,
+    locale: Locale,
+    text: string
+  ): Promise<void> {
+    const email = text.trim().toLowerCase()
+    if (!isValidEmail(email)) {
+      await sendMessage(this.env, chat_id, t(locale, "invalid_email"))
+      return
+    }
+
+    await sendChatAction(this.env, chat_id, "typing")
+    const sb = anonClient(this.env)
+    const { error } = await sb.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: false }
+    })
+
+    if (error) {
+      // Supabase doesn't reliably distinguish "user not found" from other
+      // errors. We collapse them into a single "create your account first"
+      // message — safest UX.
+      await sendMessage(
+        this.env,
+        chat_id,
+        t(locale, "email_not_found", { app_url: this.env.PLATFORM_APP_URL })
+      )
+      return
+    }
+
+    const pending: PendingOtpState = {
+      email,
+      attempts: 0,
+      expires_at: Date.now() + PENDING_OTP_TTL_MS
+    }
+    await this.state.storage.put("pending_otp", pending)
+    await sendMessage(this.env, chat_id, t(locale, "otp_sent"))
+  }
+
+  private async handleOtpAttempt(
+    chat_id: number,
+    locale: Locale,
+    pending: PendingOtpState,
+    raw: string
+  ): Promise<void> {
+    if (Date.now() > pending.expires_at) {
+      await this.state.storage.delete("pending_otp")
+      await sendMessage(this.env, chat_id, t(locale, "otp_expired"))
+      return
+    }
+    if (pending.attempts >= MAX_OTP_ATTEMPTS) {
+      await this.state.storage.delete("pending_otp")
+      await sendMessage(this.env, chat_id, t(locale, "otp_too_many_attempts"))
+      return
+    }
+
+    const code = raw.replace(/\D/g, "")
+    if (code.length !== 6) {
+      await this.bumpOtpAttempt(pending)
+      await sendMessage(this.env, chat_id, t(locale, "otp_invalid"))
+      return
+    }
+
+    await sendChatAction(this.env, chat_id, "typing")
+    const sb = anonClient(this.env)
+    const { data, error } = await sb.auth.verifyOtp({
+      email: pending.email,
+      token: code,
+      type: "email"
+    })
+
+    if (error || !data?.user || !data?.session) {
+      await this.bumpOtpAttempt(pending)
+      await sendMessage(this.env, chat_id, t(locale, "otp_invalid"))
+      return
+    }
+
+    const patient_id = data.user.id
+    const access_token = data.session.access_token
+    const refresh_token = data.session.refresh_token
+
+    // Pull profile fields we care about (service role: avoid an extra RLS round-trip
+    // before we even know the registration state).
+    const svc = serviceClient(this.env)
+    const { data: profile } = await svc
+      .from("profiles")
+      .select("chosen_name, registration_completed")
+      .eq("id", patient_id)
+      .maybeSingle()
+
+    const chosen_name = profile?.chosen_name ?? null
+    const registration_completed = profile?.registration_completed ?? false
+
+    const authState: AuthState = {
+      patient_id,
+      access_token,
+      refresh_token,
+      chosen_name,
+      registration_completed,
+      linked_at: new Date().toISOString()
+    }
+    await this.state.storage.put("auth", authState)
+    await this.state.storage.delete("pending_otp")
+
+    if (!registration_completed) {
+      // Don't link Telegram for unfinished accounts. Patient retries /start
+      // after completing registration in the app.
+      await sendMessage(
+        this.env,
+        chat_id,
+        t(locale, "registration_incomplete", { app_url: this.env.PLATFORM_APP_URL })
+      )
+      return
+    }
+
+    // Persist Telegram ↔ patient mapping and audit.
+    await svc.rpc("concierge_link_telegram", {
+      p_telegram_user_id: chat_id,
+      p_patient_id: patient_id,
+      p_locale: locale
+    })
+    await svc.rpc("log_concierge_action", {
+      p_patient_id: patient_id,
+      p_telegram_user_id: chat_id,
+      p_intent: null,
+      p_action: "link_telegram",
+      p_payload: {}
+    })
+
+    await this.greetLinked(chat_id, locale, chosen_name)
+  }
+
+  // ---------------------------------------------------------------------
+  // Callback handling (Phase 1: menu stubs)
+  // ---------------------------------------------------------------------
+
+  private async handleCallback(cb: TelegramCallbackQuery): Promise<void> {
+    await answerCallbackQuery(this.env, cb.id)
+    if (!cb.message) return
+    const chat_id = cb.message.chat.id
+    const locale = (await this.state.storage.get<Locale>("locale")) ?? DEFAULT_LOCALE
+    await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+  }
+
+  // ---------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------
+
+  private async greetLinked(
+    chat_id: number,
+    locale: Locale,
+    chosen_name: string | null
+  ): Promise<void> {
+    const name = chosen_name?.trim() || (locale === "pt" ? "amigo" : "friend")
+    const reply_markup: ReplyMarkup = {
+      inline_keyboard: [
+        [{ text: t(locale, "main_menu_book"), callback_data: "menu:book" }],
+        [{ text: t(locale, "main_menu_my_appts"), callback_data: "menu:list" }],
+        [{ text: t(locale, "main_menu_faq"), callback_data: "menu:faq" }]
+      ]
+    }
+    await sendMessage(this.env, chat_id, t(locale, "welcome_linked", { name }), reply_markup)
+  }
+
+  private async ensureLocale(text: string): Promise<Locale> {
+    const stored = await this.state.storage.get<Locale>("locale")
+    if (stored) return stored
+    const detected = detectLocaleFromText(text)
+    await this.state.storage.put("locale", detected)
+    return detected
+  }
+
+  private async bumpOtpAttempt(pending: PendingOtpState): Promise<void> {
+    await this.state.storage.put("pending_otp", { ...pending, attempts: pending.attempts + 1 })
+  }
+}
+
+function isValidEmail(s: string): boolean {
+  // Pragmatic email check; intentionally not RFC-strict.
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
 }

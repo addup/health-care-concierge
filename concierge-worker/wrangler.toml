@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Non-secret runtime config. Override per-environment as needed.
+[vars]
+PLATFORM_APP_URL = "https://equalcare.example"
+
 # Durable Object namespace for the per-patient agent.
 [[durable_objects.bindings]]
 name = "PATIENT_AGENT"

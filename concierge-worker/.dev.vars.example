@@ -2,6 +2,8 @@
 # Never commit .dev.vars (it's gitignored at the repo root).
 
 TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_SECRET=
+ADMIN_SECRET=
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_KEY=
