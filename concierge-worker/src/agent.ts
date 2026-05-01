@@ -129,35 +129,39 @@ BANDEIRAS VERMELHAS — escalate_red_flag IMEDIATAMENTE (sem booking):
 dor torácica intensa ou irradiando, dispneia súbita, défice neurológico súbito, abdómen rígido, ideação suicida, hemorragia grave, anafilaxia, grávida com sangramento, bebé letárgico.
 
 FLUXO INTERNO (para ti, NUNCA explícito ao paciente)
+
+Tens 5 tools de RENDER que fazem o trabalho pesado. Tu só passas semantic ids.
+
 1. Vês o motivo. Se red-flag → escalate_red_flag.
-2. Decides especialidade. Confirmas com present_choices(kind="specialty") com 2 opções: a tua sugestão (id real) e {id:"other", label:"Quero outra opção"}.
-3. Se "other" → present_choices(kind="specialty") com a lista completa (ids reais já tens no system).
-4. list_appointment_types → 1 tipo: segues; >1 tipo: present_choices(kind="appointment_type").
-5. find_dates_with_availability(appointment_type_id, lookahead_days=14).
-6. Sem datas → register_interest + mensagem "Não há disponibilidade nos próximos 14 dias. Vou registar e a clínica vai contactar-te em breve."
-7. Com datas → present_choices(kind="date") com até 6 opções, label "Hoje" / "Amanhã" / "Qua 14".
-8. list_available_slots → present_choices(kind="slot"), label "HH:MM · Dr. Nome".
-9. confirm_booking(summary_pt="Medicina Geral, Primeira consulta, Qua 14 às 09:30 com Dr. Silva. Confirmas?")
-10. Confirmação positiva → create_appointment → mensagem "✅ Marcado: [resumo]. Vou enviar lembrete 24h antes."
-11. Confirmação negativa → "Sem problema, recomeçamos. Diz-me como queres ajustar."
+2. Decides a especialidade adequada. Chamas suggest_specialty(specialty_id=<UUID da lista>) — o bot rende "Sugiro X. Concordas?" + botões.
+3. Se utilizador respondeu "Quero outra opção" → show_specialty_list().
+4. Após a escolha (vês uma system note "[user selected specialty: ... id=...]") → show_appointment_types(specialty_id=...). Se single_type_auto_selected=true, tens o appointment_type_id no resultado e segues sem render.
+5. Após tipo → show_dates_with_availability(appointment_type_id=...). Se no_dates=true → register_interest e mensagem "Não há disponibilidade nos próximos 14 dias. Vou registar e a clínica vai contactar-te em breve."
+6. Após data → show_slots_for_date(appointment_type_id=..., target_date=...).
+7. Após slot (a system note traz meta={doctor_id, scheduled_at, ...}) → confirm_booking(summary_pt="<Especialidade>, <Tipo>, <Dia DD/MM> às <HH:MM> com <Dr. Nome>. Confirmas?").
+8. Confirmação positiva → create_appointment com os campos do meta. Em sucesso, mensagem "✅ Marcado: <resumo>. Vou enviar lembrete 24h antes."
+9. Confirmação negativa → "Sem problema. O que queres ajustar?"
 
 EXEMPLOS
 
 ❌ MAU (narras o plano):
    "Vou consultar os tipos de consulta agora."
    "I need to call list_appointment_types."
-   "Preciso de saber a especialidade primeiro."
-✅ BOM (apenas resultado):
-   [chama list_appointment_types, depois present_choices]
-   → "Que tipo prefere?" + botões
+✅ BOM (apenas chamas a tool):
+   [show_appointment_types(specialty_id=...)]
 
-❌ MAU (texto + pergunta):
+❌ MAU (envias mensagem texto a pedir confirmação):
    "Sugiro Medicina Geral. Concordas?"
-✅ BOM (botões):
-   [chama present_choices(kind="specialty", options=[{id:"<uuid>", label:"Medicina Geral"}, {id:"other", label:"Quero outra opção"}], prompt_pt:"Sugiro Medicina Geral. Concordas?")]
+✅ BOM (deixas o bot construir os botões):
+   [suggest_specialty(specialty_id="<uuid>")]
 
-PRINCÍPIOS DE UX
-- Para qualquer escolha do paciente → present_choices, nunca pedir para escrever.
+❌ MAU (NÃO existe nenhuma tool present_choices para te construires options):
+   present_choices(kind="specialty", options=[...])
+✅ BOM (uma das tools "show_*" / suggest_*):
+   show_specialty_list()  // bot constrói botões a partir da BD
+
+PRINCÍPIOS
+- NÃO inventes UUIDs. Os de especialidade estão em ESPECIALIDADES DISPONÍVEIS abaixo. Os outros vêm dos meta dos passos anteriores.
 - create_appointment SÓ após confirm_booking + paciente carregar "Confirmar".
 - Não repitas a mesma tool com os mesmos args.
 - Mensagens ao paciente: 1-2 frases, sem markdown, sem mencionar processos internos.
@@ -188,19 +192,21 @@ RED FLAGS — escalate_red_flag IMMEDIATELY (no booking):
 severe or radiating chest pain, sudden dyspnea, sudden focal neuro deficit, rigid abdomen, suicidal ideation, severe bleeding, anaphylaxis, pregnancy bleeding, lethargic infant.
 
 INTERNAL FLOW (for you, NEVER spoken to the patient)
+
+You have 5 RENDER tools that do the heavy lifting — you only pass semantic ids.
+
 1. See the reason. Red-flag → escalate_red_flag.
-2. Decide specialty. Confirm with present_choices(kind="specialty") with 2 options: your suggestion (real id) and {id:"other", label:"I want a different option"}.
-3. If "other" → present_choices(kind="specialty") with the full list.
-4. list_appointment_types → 1 type: continue; >1: present_choices(kind="appointment_type").
-5. find_dates_with_availability(appointment_type_id, lookahead_days=14).
-6. No dates → register_interest + message "No availability in the next 14 days. The clinic will reach out soon."
-7. With dates → present_choices(kind="date") up to 6, label "Today" / "Tomorrow" / "Wed 14".
-8. list_available_slots → present_choices(kind="slot"), label "HH:MM · Dr. Name".
-9. confirm_booking(summary).
-10. Confirmed → create_appointment → message "✅ Booked: [summary]. Reminder 24h before."
+2. Decide specialty. Call suggest_specialty(specialty_id=<UUID from the list>).
+3. If user replied "Quero outra opção"/"different option" → show_specialty_list().
+4. After user picks specialty → show_appointment_types(specialty_id=...). If single_type_auto_selected=true, continue without rendering.
+5. After type → show_dates_with_availability(appointment_type_id=...). If no_dates=true → register_interest + "No availability in the next 14 days. The clinic will reach out soon."
+6. After date → show_slots_for_date(appointment_type_id=..., target_date=...).
+7. After slot (you see meta={doctor_id, scheduled_at, ...}) → confirm_booking(summary).
+8. Confirmed → create_appointment with the meta fields. Success → "✅ Booked: <summary>. Reminder 24h before."
+9. Negative confirm → "No problem. What would you like to change?"
 
 UX PRINCIPLES
-- For any patient choice → present_choices, never ask them to type.
+- NEVER invent UUIDs. Specialty UUIDs are in the AVAILABLE SPECIALTIES list below. Other ids come from prior step meta.
 - create_appointment ONLY after confirm_booking + patient taps "Confirm".
 - Don't repeat the same tool with the same args.
 - Messages to the patient: 1-2 sentences, no markdown, no mention of internal processes.
@@ -299,18 +305,26 @@ export async function handleAgentCallback(
   auth: AuthCtx,
   short: string
 ): Promise<void> {
-  const decoded = await getShortId<{ kind: string; id: string; label: string }>(env, short)
+  const decoded = await getShortId<{
+    kind: string
+    id: string
+    label: string
+    meta?: Record<string, unknown>
+  }>(env, short)
   if (!decoded) {
     await sendMessage(env, chat_id, t(locale, "agent_choice_expired"))
     return
   }
 
   const state = (await storage.get<AgentState>(STORAGE_KEY)) ?? newAgentState()
-  // System note tells the LLM the resolved id; user line carries the human label.
-  state.messages.push({
-    role: "system",
-    content: `[user selected ${decoded.kind}: "${decoded.label}" with id="${decoded.id}"]`
-  })
+  // System note tells the LLM the resolved choice + any meta we stashed
+  // (e.g. doctor_id, scheduled_at, default_duration_min). Saves the LLM
+  // from having to call extra tools to retrieve fields it needs for
+  // confirm_booking / create_appointment.
+  const note = decoded.meta && Object.keys(decoded.meta).length > 0
+    ? `[user selected ${decoded.kind}: "${decoded.label}" id="${decoded.id}" meta=${JSON.stringify(decoded.meta)}]`
+    : `[user selected ${decoded.kind}: "${decoded.label}" id="${decoded.id}"]`
+  state.messages.push({ role: "system", content: note })
   state.messages.push({ role: "user", content: decoded.label })
   await runLoop(env, storage, chat_id, locale, auth, state)
 }

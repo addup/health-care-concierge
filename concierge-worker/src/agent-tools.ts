@@ -93,31 +93,65 @@ export const AGENT_TOOLS = [
     }
   },
   {
-    name: "present_choices",
-    description: "Mostra ao paciente botões inline com opções para escolher. Usa SEMPRE para escolha de especialidade, tipo, data, slot ou médico — em vez de pedir para escrever. Encerra o turno; a próxima mensagem do paciente vem via callback.",
+    name: "suggest_specialty",
+    description: "Sugere UMA especialidade ao paciente e pede confirmação. Botões: 'Sim, [Especialidade]' / 'Quero outra opção'. Usa quando o motivo do paciente sugere uma especialidade clara. Encerra o turno.",
     parameters: {
       type: "object",
       properties: {
-        prompt_pt: { type: "string", description: "Pergunta breve antes dos botões, em PT-PT." },
-        kind: {
-          type: "string",
-          enum: ["specialty", "appointment_type", "date", "slot", "doctor"],
-          description: "Tipo de escolha. Determina como o callback é interpretado."
-        },
-        options: {
-          type: "array",
-          description: "Lista de opções com id (uuid ou date string ou HH:MM/doctor_id) e label legível.",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              label: { type: "string" }
-            },
-            required: ["id", "label"]
-          }
-        }
+        specialty_id: { type: "string", description: "UUID exacto da especialidade da lista no system prompt." },
+        prompt_pt: { type: "string", description: "Mensagem opcional antes dos botões. Se vazia, usamos uma default." }
       },
-      required: ["prompt_pt", "kind", "options"]
+      required: ["specialty_id"]
+    }
+  },
+  {
+    name: "show_specialty_list",
+    description: "Mostra TODAS as especialidades activas ao paciente como botões. Usa quando o paciente pediu 'outra opção' depois de suggest_specialty, ou quando o motivo é genuinamente ambíguo. Encerra o turno.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt_pt: { type: "string", description: "Mensagem antes dos botões." }
+      },
+      required: ["prompt_pt"]
+    }
+  },
+  {
+    name: "show_appointment_types",
+    description: "Mostra os tipos de consulta activos para uma especialidade como botões. Se houver só 1 tipo, segue automaticamente sem mostrar botões. Encerra o turno (ou retorna single_type_auto_selected se só houve 1).",
+    parameters: {
+      type: "object",
+      properties: {
+        specialty_id: { type: "string" },
+        prompt_pt: { type: "string", description: "Mensagem opcional antes dos botões." }
+      },
+      required: ["specialty_id"]
+    }
+  },
+  {
+    name: "show_dates_with_availability",
+    description: "Pesquisa disponibilidade nos próximos 14 dias e mostra ao paciente as datas disponíveis como botões. Se nenhuma data tiver slots, retorna no_dates (chama register_interest a seguir). Encerra o turno.",
+    parameters: {
+      type: "object",
+      properties: {
+        appointment_type_id: { type: "string" },
+        doctor_id: { type: "string", description: "Opcional, filtra." },
+        prompt_pt: { type: "string", description: "Mensagem opcional antes dos botões." }
+      },
+      required: ["appointment_type_id"]
+    }
+  },
+  {
+    name: "show_slots_for_date",
+    description: "Mostra os horários disponíveis para um tipo de consulta numa data como botões. Encerra o turno.",
+    parameters: {
+      type: "object",
+      properties: {
+        appointment_type_id: { type: "string" },
+        target_date: { type: "string", description: "YYYY-MM-DD" },
+        doctor_id: { type: "string", description: "Opcional." },
+        prompt_pt: { type: "string", description: "Mensagem opcional antes dos botões." }
+      },
+      required: ["appointment_type_id", "target_date"]
     }
   },
   {
@@ -201,7 +235,12 @@ export async function dispatchTool(
       case "list_doctors": return await toolListDoctors(ctx, args)
       case "find_dates_with_availability": return await toolFindDates(ctx, args)
       case "list_available_slots": return await toolListSlots(ctx, args)
-      case "present_choices": return await toolPresentChoices(ctx, args)
+      case "suggest_specialty": return await toolSuggestSpecialty(ctx, args)
+      case "show_specialty_list": return await toolShowSpecialtyList(ctx, args)
+      case "show_appointment_types": return await toolShowAppointmentTypes(ctx, args)
+      case "show_dates_with_availability": return await toolShowDatesWithAvailability(ctx, args)
+      case "show_slots_for_date": return await toolShowSlotsForDate(ctx, args)
+      case "present_choices": return await toolPresentChoices(ctx, args)  // legacy
       case "confirm_booking": return await toolConfirmBooking(ctx, args)
       case "create_appointment": return await toolCreateAppointment(ctx, args)
       case "register_interest": return await toolRegisterInterest(ctx, args)
@@ -493,6 +532,206 @@ async function toolRegisterInterest(ctx: ToolCtx, args: RawArgs): Promise<ToolRe
     payload: { specialty_id, appointment_type_id, note }
   })
   return { data: { ok: true } }
+}
+
+// ---------------------------------------------------------------------
+// New narrower "show X" tools — the LLM only passes semantic ids; the
+// bot does the rendering (DB queries, button construction, KV stash).
+// Replaces the more error-prone present_choices tool.
+// ---------------------------------------------------------------------
+
+async function toolSuggestSpecialty(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
+  const specialty_id = String(args.specialty_id ?? "")
+  if (!specialty_id) return { data: { error: "specialty_id_required" } }
+
+  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const { data: spec } = await sb
+    .from("specialties")
+    .select("id, name")
+    .eq("id", specialty_id)
+    .eq("is_active", true)
+    .maybeSingle()
+  if (!spec) {
+    return {
+      data: {
+        error: "specialty_not_found_or_inactive",
+        hint: "Use exactamente um dos UUIDs listados no system prompt em ESPECIALIDADES DISPONÍVEIS. Não inventes."
+      }
+    }
+  }
+
+  const prompt = String(args.prompt_pt ?? "") || `Sugiro ${spec.name}. Concordas?`
+  const yesShort = await putShortId(ctx.env, {
+    kind: "specialty", id: spec.id, label: spec.name,
+    meta: { specialty_name: spec.name }
+  })
+  const otherShort = await putShortId(ctx.env, {
+    kind: "specialty_other", id: "other", label: "Quero outra opção"
+  })
+  await sendMessage(ctx.env, ctx.chat_id, prompt, {
+    inline_keyboard: [
+      [{ text: `Sim, ${spec.name}`.slice(0, 60), callback_data: `ag:${yesShort}` }],
+      [{ text: "Quero outra opção", callback_data: `ag:${otherShort}` }]
+    ]
+  })
+  return {
+    data: { rendered: true, suggested_id: spec.id, suggested_name: spec.name },
+    ends_turn: true
+  }
+}
+
+async function toolShowSpecialtyList(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
+  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const { data, error } = await sb
+    .from("specialties")
+    .select("id, name")
+    .eq("is_active", true)
+    .order("name")
+  if (error || !data || data.length === 0) {
+    return { data: { error: "no_active_specialties" } }
+  }
+  const prompt = String(args.prompt_pt ?? "") || "Que especialidade procuras?"
+  const inline_keyboard: ReplyMarkup["inline_keyboard"] = []
+  for (const s of data) {
+    const short = await putShortId(ctx.env, {
+      kind: "specialty", id: s.id, label: s.name, meta: { specialty_name: s.name }
+    })
+    inline_keyboard.push([{ text: s.name.slice(0, 60), callback_data: `ag:${short}` }])
+  }
+  await sendMessage(ctx.env, ctx.chat_id, prompt, { inline_keyboard })
+  return { data: { rendered: true, count: data.length }, ends_turn: true }
+}
+
+async function toolShowAppointmentTypes(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
+  const specialty_id = String(args.specialty_id ?? "")
+  if (!specialty_id) return { data: { error: "specialty_id_required" } }
+  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const { data, error } = await sb
+    .from("appointment_types")
+    .select("id, name, default_duration_min")
+    .eq("specialty_id", specialty_id)
+    .eq("is_active", true)
+    .order("name")
+  if (error || !data || data.length === 0) {
+    return { data: { error: "no_active_types_for_specialty" } }
+  }
+
+  if (data.length === 1) {
+    const only = data[0]!
+    return {
+      data: {
+        single_type_auto_selected: true,
+        appointment_type_id: only.id,
+        appointment_type_name: only.name,
+        default_duration_min: only.default_duration_min
+      }
+    }
+  }
+
+  const prompt = String(args.prompt_pt ?? "") || "Que tipo de consulta?"
+  const inline_keyboard: ReplyMarkup["inline_keyboard"] = []
+  for (const t of data) {
+    const short = await putShortId(ctx.env, {
+      kind: "appointment_type",
+      id: t.id,
+      label: t.name,
+      meta: { appointment_type_name: t.name, default_duration_min: t.default_duration_min }
+    })
+    inline_keyboard.push([{ text: t.name.slice(0, 60), callback_data: `ag:${short}` }])
+  }
+  await sendMessage(ctx.env, ctx.chat_id, prompt, { inline_keyboard })
+  return { data: { rendered: true, count: data.length }, ends_turn: true }
+}
+
+async function toolShowDatesWithAvailability(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
+  const appointment_type_id = String(args.appointment_type_id ?? "")
+  if (!appointment_type_id) return { data: { error: "appointment_type_id_required" } }
+  const doctor_id = args.doctor_id ? String(args.doctor_id) : undefined
+  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const today = new Date()
+  const candidates: string[] = []
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(today)
+    d.setUTCDate(today.getUTCDate() + i)
+    candidates.push(d.toISOString().slice(0, 10))
+  }
+  const checks = await Promise.all(
+    candidates.map(async (iso) => {
+      const { data, error } = await sb.rpc("get_available_slots", {
+        _appointment_type_id: appointment_type_id,
+        _target_date: iso,
+        ...(doctor_id ? { _doctor_id_filter: doctor_id } : {})
+      })
+      if (error || !data) return { iso, hasSlots: false }
+      const slots = (data as unknown[]).filter(isSlotBlob)
+      return { iso, hasSlots: slots.length > 0 }
+    })
+  )
+  const dates = checks.filter((c) => c.hasSlots).map((c) => c.iso).slice(0, 6)
+  if (dates.length === 0) {
+    return { data: { no_dates: true, lookahead_days: 14 } }
+  }
+  const prompt = String(args.prompt_pt ?? "") || "Que dia preferes?"
+  const inline_keyboard: ReplyMarkup["inline_keyboard"] = []
+  for (const iso of dates) {
+    const label = formatDateLabel(iso)
+    const short = await putShortId(ctx.env, {
+      kind: "date", id: iso, label, meta: { target_date: iso }
+    })
+    inline_keyboard.push([{ text: label, callback_data: `ag:${short}` }])
+  }
+  await sendMessage(ctx.env, ctx.chat_id, prompt, { inline_keyboard })
+  return { data: { rendered: true, count: dates.length }, ends_turn: true }
+}
+
+async function toolShowSlotsForDate(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
+  const appointment_type_id = String(args.appointment_type_id ?? "")
+  const target_date = String(args.target_date ?? "")
+  if (!appointment_type_id || !target_date) {
+    return { data: { error: "missing_required_args" } }
+  }
+  const doctor_id = args.doctor_id ? String(args.doctor_id) : undefined
+  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const { data, error } = await sb.rpc("get_available_slots", {
+    _appointment_type_id: appointment_type_id,
+    _target_date: target_date,
+    ...(doctor_id ? { _doctor_id_filter: doctor_id } : {})
+  })
+  if (error || !data) return { data: { error: "lookup_failed", message: error?.message } }
+  const slots = (data as unknown[]).filter(isSlotBlob).slice(0, 8)
+  if (slots.length === 0) return { data: { no_slots: true } }
+
+  const prompt = String(args.prompt_pt ?? "") || "Que horário preferes?"
+  const inline_keyboard: ReplyMarkup["inline_keyboard"] = []
+  for (const slot of slots) {
+    const scheduled_at = `${target_date}T${slot.time}:00Z`
+    const short = await putShortId(ctx.env, {
+      kind: "slot",
+      id: scheduled_at,
+      label: `${slot.time} · ${slot.doctor_name}`,
+      meta: {
+        doctor_id: slot.doctor_id,
+        doctor_name: slot.doctor_name,
+        scheduled_at,
+        time: slot.time,
+        appointment_type_id
+      }
+    })
+    inline_keyboard.push([{ text: `${slot.time} · ${slot.doctor_name}`.slice(0, 60), callback_data: `ag:${short}` }])
+  }
+  await sendMessage(ctx.env, ctx.chat_id, prompt, { inline_keyboard })
+  return { data: { rendered: true, count: slots.length }, ends_turn: true }
+}
+
+function formatDateLabel(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`)
+  const today = new Date()
+  today.setUTCHours(0, 0, 0, 0)
+  const diff = Math.round((d.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+  if (diff === 0) return "Hoje"
+  if (diff === 1) return "Amanhã"
+  const dows = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"]
+  return `${dows[d.getUTCDay()]} ${d.getUTCDate()}`
 }
 
 async function toolEscalateRedFlag(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {

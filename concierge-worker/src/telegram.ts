@@ -69,10 +69,12 @@ export async function sendMessage(
   text: string,
   reply_markup?: ReplyMarkup
 ): Promise<void> {
+  // No parse_mode by default — agent / LLM-generated text occasionally
+  // contains literal '<' / '>' or '*' that would break HTML or Markdown
+  // parsing. Plain text is safe; we don't actually need formatting.
   await tgRequest(env, "sendMessage", {
     chat_id,
     text,
-    parse_mode: "HTML",
     disable_web_page_preview: true,
     ...(reply_markup ? { reply_markup } : {})
   })
