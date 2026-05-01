@@ -12,6 +12,13 @@ import { anonClient, serviceClient } from "./supabase"
 import { t, detectLocaleFromText, DEFAULT_LOCALE, type Locale } from "./i18n"
 import { classify, type ClassifiedIntent } from "./intent"
 import { logAction } from "./audit"
+import {
+  startBooking,
+  handleSpecialtyChoice,
+  handleTypeChoice,
+  handleDateChoice,
+  handleSlotChoice
+} from "./booking"
 
 interface AuthState {
   patient_id: string
@@ -83,6 +90,7 @@ export class PatientAgent implements DurableObject {
     }
     if (text.startsWith("/cancel") || text.startsWith("/reset")) {
       await this.state.storage.delete("pending_otp")
+      await this.state.storage.delete("booking_state")
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
     }
@@ -132,9 +140,8 @@ export class PatientAgent implements DurableObject {
   }
 
   /**
-   * Phase 2a routes intents to stubs. Subsequent phases plug real handlers
-   * (BOOK / RESCHEDULE / CANCEL / LIST in 2b–2c, FAQ in 2d, TRIAGE in 3,
-   * FORM_RESPONSE in 4).
+   * Routes intents. RESCHEDULE / CANCEL / LIST_APPOINTMENTS land in 2c;
+   * FAQ in 2d; TRIAGE in 3; FORM_RESPONSE in 4. BOOK is live as of 2b.
    */
   private async dispatchIntent(
     chat_id: number,
@@ -144,13 +151,19 @@ export class PatientAgent implements DurableObject {
   ): Promise<void> {
     switch (classified.intent) {
       case "GREET":
-        await this.greetLinked(chat_id, locale, auth.chosen_name)
-        return
       case "IDENTIFY":
-        // Already linked — gently acknowledge.
         await this.greetLinked(chat_id, locale, auth.chosen_name)
         return
       case "BOOK":
+        await startBooking(
+          this.env,
+          this.state.storage,
+          chat_id,
+          locale,
+          { patient_id: auth.patient_id, access_token: auth.access_token },
+          classified.entities.specialty
+        )
+        return
       case "RESCHEDULE":
       case "CANCEL":
       case "LIST_APPOINTMENTS":
@@ -320,9 +333,42 @@ export class PatientAgent implements DurableObject {
 
   private async handleCallback(cb: TelegramCallbackQuery): Promise<void> {
     await answerCallbackQuery(this.env, cb.id)
-    if (!cb.message) return
+    if (!cb.message || !cb.data) return
     const chat_id = cb.message.chat.id
     const locale = (await this.state.storage.get<Locale>("locale")) ?? DEFAULT_LOCALE
+    const auth = await this.state.storage.get<AuthState>("auth")
+
+    // Booking-flow callbacks all need the patient session.
+    if (auth?.registration_completed) {
+      const ctx = { patient_id: auth.patient_id, access_token: auth.access_token }
+      const [prefix, payload] = splitCallback(cb.data)
+      switch (prefix) {
+        case "menu":
+          if (payload === "book") {
+            await startBooking(this.env, this.state.storage, chat_id, locale, ctx)
+            return
+          }
+          // list / faq → Phase 2c / 2d
+          await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+          return
+        case "s":
+          await handleSpecialtyChoice(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        case "t":
+          await handleTypeChoice(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        case "d":
+          await handleDateChoice(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        case "b":
+          await handleSlotChoice(this.env, this.state.storage, chat_id, locale, ctx, payload)
+          return
+        default:
+          await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+          return
+      }
+    }
+
     await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
   }
 
@@ -362,4 +408,11 @@ export class PatientAgent implements DurableObject {
 function isValidEmail(s: string): boolean {
   // Pragmatic email check; intentionally not RFC-strict.
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
+}
+
+/** Split "prefix:payload" once. Payloads themselves may contain colons. */
+function splitCallback(data: string): [string, string] {
+  const idx = data.indexOf(":")
+  if (idx === -1) return [data, ""]
+  return [data.slice(0, idx), data.slice(idx + 1)]
 }

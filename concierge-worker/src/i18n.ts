@@ -24,6 +24,25 @@ type StringKey =
   | "main_menu_faq"
   | "feature_in_construction"
   | "reset_state"
+  | "booking_ask_specialty"
+  | "booking_no_specialties"
+  | "booking_ask_type"
+  | "booking_ask_date"
+  | "booking_no_types"
+  | "booking_ask_slot"
+  | "booking_no_slots"
+  | "booking_slot_taken"
+  | "booking_confirmed"
+  | "booking_failed"
+  | "date_today"
+  | "date_tomorrow"
+  | "date_dow_0"
+  | "date_dow_1"
+  | "date_dow_2"
+  | "date_dow_3"
+  | "date_dow_4"
+  | "date_dow_5"
+  | "date_dow_6"
 
 const STRINGS: Record<Locale, Record<StringKey, string>> = {
   pt: {
@@ -40,7 +59,26 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     main_menu_my_appts: "As minhas consultas",
     main_menu_faq: "Tenho uma dúvida",
     feature_in_construction: "Funcionalidade em construção. Para já só consigo identificar-te.",
-    reset_state: "Conversa reiniciada."
+    reset_state: "Conversa reiniciada.",
+    booking_ask_specialty: "Que especialidade?",
+    booking_no_specialties: "Não há especialidades activas neste momento. Tenta mais tarde.",
+    booking_ask_type: "Que tipo de consulta?",
+    booking_ask_date: "Para que dia?",
+    booking_no_types: "Não há tipos de consulta disponíveis para essa especialidade. Tenta outra.",
+    booking_ask_slot: "Horários disponíveis em {date}:",
+    booking_no_slots: "Sem horários disponíveis em {date}. Escolhe outro dia.",
+    booking_slot_taken: "Esse horário foi entretanto ocupado. Vou voltar a procurar.",
+    booking_confirmed: "✅ Marcado: {type} com {doctor}, {when}. Recebes um lembrete 24h antes.",
+    booking_failed: "Não consegui marcar agora. Tenta outra vez ou contacta a clínica.",
+    date_today: "Hoje",
+    date_tomorrow: "Amanhã",
+    date_dow_0: "Dom",
+    date_dow_1: "Seg",
+    date_dow_2: "Ter",
+    date_dow_3: "Qua",
+    date_dow_4: "Qui",
+    date_dow_5: "Sex",
+    date_dow_6: "Sáb"
   },
   en: {
     welcome_unlinked: "Hi! I'm the EQUAL Care concierge. To identify you, what's your email?",
@@ -56,7 +94,26 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     main_menu_my_appts: "My appointments",
     main_menu_faq: "I have a question",
     feature_in_construction: "Feature under construction. I can only identify you for now.",
-    reset_state: "Conversation reset."
+    reset_state: "Conversation reset.",
+    booking_ask_specialty: "Which specialty?",
+    booking_no_specialties: "No active specialties right now. Try later.",
+    booking_ask_type: "What kind of appointment?",
+    booking_ask_date: "What day?",
+    booking_no_types: "No appointment types available for that specialty. Pick another.",
+    booking_ask_slot: "Available slots on {date}:",
+    booking_no_slots: "No available slots on {date}. Pick another day.",
+    booking_slot_taken: "That slot was just taken. Let me look again.",
+    booking_confirmed: "✅ Booked: {type} with {doctor}, {when}. You'll get a reminder 24h before.",
+    booking_failed: "I couldn't complete the booking right now. Try again or call the clinic.",
+    date_today: "Today",
+    date_tomorrow: "Tomorrow",
+    date_dow_0: "Sun",
+    date_dow_1: "Mon",
+    date_dow_2: "Tue",
+    date_dow_3: "Wed",
+    date_dow_4: "Thu",
+    date_dow_5: "Fri",
+    date_dow_6: "Sat"
   }
 }
 
