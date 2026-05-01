@@ -192,7 +192,7 @@ export async function handleAgentText(
 
   const state = (await storage.get<AgentState>(STORAGE_KEY)) ?? newAgentState()
   const isFirstTurn = state.messages.length === 0
-  const willHardcode = isFirstTurn && text.trim().length < 60
+  const willHardcode = isFirstTurn && looksLikeGenericBookingEntry(text)
 
   console.log(JSON.stringify({
     tag: "agent-text",
@@ -204,13 +204,12 @@ export async function handleAgentText(
 
   state.messages.push({ role: "user", content: text })
 
-  // Deterministic first turn for short / generic entry messages
-  // ("marcar consulta", "olá quero marcar"). The LLM consistently
-  // jumped straight to list_specialties otherwise, which defeats the
-  // open-ended-question UX. For longer messages with likely clinical
-  // content, fall through to the LLM so it can infer specialty
-  // directly without asking redundant questions.
-  if (isFirstTurn && text.trim().length < 60) {
+  // Deterministic first-turn open question — only when the message is a
+  // plain booking entry ("marcar consulta", "olá quero marcar"). For
+  // anything more substantive (a stated motive, a specialty hint), pass
+  // straight to the LLM so we don't ask the obvious "qual o motivo?"
+  // back to a patient who already gave one.
+  if (willHardcode) {
     const open = locale === "en"
       ? "What brings you to seek care? Tell me in a few words."
       : "Qual o motivo para procurares cuidados de saúde? Conta-me em poucas palavras."
@@ -221,6 +220,22 @@ export async function handleAgentText(
   }
 
   await runLoop(env, storage, chat_id, locale, auth, state)
+}
+
+/**
+ * Is this message a bare booking entry / greeting that should be met
+ * with the open motive question? Returns false for messages that
+ * already convey a motive ("Viagem para Angola", "tenho dores").
+ */
+function looksLikeGenericBookingEntry(text: string): boolean {
+  const t = text.trim().toLowerCase()
+  if (t.length === 0) return false
+  if (t.length > 45) return false
+  // Pure greetings.
+  if (/^(olá|ola|oi|bom\s+dia|boa\s+tarde|boa\s+noite|hi|hello|hey)\s*[!.?]?$/i.test(t)) return true
+  // Booking-intent verbs without further detail. Allow optional
+  // "consulta" / "uma consulta" suffix.
+  return /^(quero\s+|preciso\s+(de\s+)?|gostava\s+(de\s+)?|posso\s+|book\s+|schedule\s+)?(marcar|agendar)(\s+(uma\s+)?consulta)?\s*[!.?]?$/i.test(t)
 }
 
 /**

@@ -290,7 +290,16 @@ export class PatientAgent implements DurableObject {
       case "FORM_RESPONSE":
       case "OTHER":
       default:
-        await sendMessage(this.env, chat_id, t(locale, "feature_in_construction"))
+        // Don't dead-end ambiguous text. Route to the agent — it can
+        // interpret most booking-related queries or fall back gracefully.
+        await handleAgentText(
+          this.env,
+          this.state.storage,
+          chat_id,
+          locale,
+          { patient_id: auth.patient_id, access_token: auth.access_token },
+          rawText
+        )
         return
     }
   }
