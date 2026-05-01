@@ -8,6 +8,18 @@
 
 import type { Env } from "./env"
 import { patientClient, serviceClient } from "./supabase"
+
+/**
+ * Reference-data reads (specialties, appointment_types, doctors,
+ * get_available_slots, check_slot_available) use the service role:
+ *   - This is non-PHI catalog/availability data
+ *   - The platform's RLS on these tables may not grant patient read access
+ *   - Cleaner than chasing RLS for every tool call
+ *
+ * Patient-scoped writes (appointments INSERT/UPDATE) still go through
+ * patientClient so RLS gates them by auth.uid(). Audit log writes use
+ * service role too.
+ */
 import { sendMessage, type ReplyMarkup } from "./telegram"
 import { putShortId } from "./short-id"
 import { logAction } from "./audit"
@@ -258,7 +270,7 @@ export async function dispatchTool(
 // ---------------------------------------------------------------------
 
 async function toolListSpecialties(ctx: ToolCtx): Promise<ToolResult> {
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb
     .from("specialties")
     .select("id, name")
@@ -271,7 +283,7 @@ async function toolListSpecialties(ctx: ToolCtx): Promise<ToolResult> {
 async function toolListAppointmentTypes(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
   const specialty_id = String(args.specialty_id ?? "")
   if (!specialty_id) return { data: { error: "specialty_id_required" } }
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb
     .from("appointment_types")
     .select("id, name, default_duration_min")
@@ -285,7 +297,7 @@ async function toolListAppointmentTypes(ctx: ToolCtx, args: RawArgs): Promise<To
 async function toolListDoctors(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
   const specialty_id = String(args.specialty_id ?? "")
   if (!specialty_id) return { data: { error: "specialty_id_required" } }
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb
     .from("doctor_specialties")
     .select("doctor_id, doctors!inner(id, is_active, profile:profiles!inner(chosen_name))")
@@ -319,7 +331,7 @@ async function toolFindDates(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
   const lookahead = Math.min(Number(args.lookahead_days ?? 14), 30)
   const doctor_id = args.doctor_id ? String(args.doctor_id) : undefined
 
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const today = new Date()
   const candidates: string[] = []
   for (let i = 0; i < lookahead; i++) {
@@ -351,7 +363,7 @@ async function toolListSlots(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
     return { data: { error: "missing_required_args" } }
   }
   const doctor_id = args.doctor_id ? String(args.doctor_id) : undefined
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb.rpc("get_available_slots", {
     _appointment_type_id: appointment_type_id,
     _target_date: target_date,
@@ -435,7 +447,7 @@ async function toolPresentChoices(ctx: ToolCtx, args: RawArgs): Promise<ToolResu
  * directly from earlier tool calls).
  */
 async function loadValidIds(ctx: ToolCtx, kind: string): Promise<Set<string> | null> {
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   if (kind === "specialty") {
     const { data } = await sb.from("specialties").select("id").eq("is_active", true)
     return new Set((data ?? []).map((r) => r.id))
@@ -544,7 +556,7 @@ async function toolSuggestSpecialty(ctx: ToolCtx, args: RawArgs): Promise<ToolRe
   const specialty_id = String(args.specialty_id ?? "")
   if (!specialty_id) return { data: { error: "specialty_id_required" } }
 
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data: spec } = await sb
     .from("specialties")
     .select("id, name")
@@ -581,14 +593,25 @@ async function toolSuggestSpecialty(ctx: ToolCtx, args: RawArgs): Promise<ToolRe
 }
 
 async function toolShowSpecialtyList(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb
     .from("specialties")
     .select("id, name")
     .eq("is_active", true)
     .order("name")
+  console.log(JSON.stringify({
+    tag: "tool-show-specialty-list",
+    count: data?.length ?? 0,
+    error: error?.message ?? null
+  }))
   if (error || !data || data.length === 0) {
-    return { data: { error: "no_active_specialties" } }
+    return {
+      data: {
+        error: "no_active_specialties",
+        message: error?.message ?? "table returned 0 rows"
+      },
+      ends_turn: true  // Don't loop on this — bail.
+    }
   }
   const prompt = String(args.prompt_pt ?? "") || "Que especialidade procuras?"
   const inline_keyboard: ReplyMarkup["inline_keyboard"] = []
@@ -605,15 +628,24 @@ async function toolShowSpecialtyList(ctx: ToolCtx, args: RawArgs): Promise<ToolR
 async function toolShowAppointmentTypes(ctx: ToolCtx, args: RawArgs): Promise<ToolResult> {
   const specialty_id = String(args.specialty_id ?? "")
   if (!specialty_id) return { data: { error: "specialty_id_required" } }
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb
     .from("appointment_types")
     .select("id, name, default_duration_min")
     .eq("specialty_id", specialty_id)
     .eq("is_active", true)
     .order("name")
+  console.log(JSON.stringify({
+    tag: "tool-show-appointment-types",
+    specialty_id,
+    count: data?.length ?? 0,
+    error: error?.message ?? null
+  }))
   if (error || !data || data.length === 0) {
-    return { data: { error: "no_active_types_for_specialty" } }
+    return {
+      data: { error: "no_active_types_for_specialty", message: error?.message ?? null },
+      ends_turn: true
+    }
   }
 
   if (data.length === 1) {
@@ -647,7 +679,7 @@ async function toolShowDatesWithAvailability(ctx: ToolCtx, args: RawArgs): Promi
   const appointment_type_id = String(args.appointment_type_id ?? "")
   if (!appointment_type_id) return { data: { error: "appointment_type_id_required" } }
   const doctor_id = args.doctor_id ? String(args.doctor_id) : undefined
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const today = new Date()
   const candidates: string[] = []
   for (let i = 0; i < 14; i++) {
@@ -691,7 +723,7 @@ async function toolShowSlotsForDate(ctx: ToolCtx, args: RawArgs): Promise<ToolRe
     return { data: { error: "missing_required_args" } }
   }
   const doctor_id = args.doctor_id ? String(args.doctor_id) : undefined
-  const sb = patientClient(ctx.env, ctx.auth.access_token)
+  const sb = serviceClient(ctx.env)
   const { data, error } = await sb.rpc("get_available_slots", {
     _appointment_type_id: appointment_type_id,
     _target_date: target_date,

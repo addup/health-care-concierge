@@ -562,18 +562,28 @@ function withSystem(
  * UUIDs. Lets the model use real ids directly in present_choices without
  * needing a prior list_specialties tool call.
  */
-async function loadSpecialtiesLine(env: Env, auth: AuthCtx): Promise<string> {
+async function loadSpecialtiesLine(env: Env, _auth: AuthCtx): Promise<string> {
   try {
-    const sb = patientClient(env, auth.access_token)
+    // Service role: specialties is reference data, not PHI. The platform's
+    // RLS on this table may be restrictive enough that the patient JWT
+    // can't read it.
+    const sb = (await import("./supabase")).serviceClient(env)
     const { data, error } = await sb
       .from("specialties")
       .select("id, name")
       .eq("is_active", true)
       .order("name")
+    console.log(JSON.stringify({
+      tag: "agent-specialties-loaded",
+      count: data?.length ?? 0,
+      names: data?.map((s) => s.name) ?? [],
+      error: error?.message ?? null
+    }))
     if (error || !data || data.length === 0) return ""
     const lines = data.map((s) => `  - ${s.name} (id: ${s.id})`).join("\n")
-    return `ESPECIALIDADES DISPONÍVEIS — usa SEMPRE estes ids exactos em present_choices, NUNCA inventes:\n${lines}`
-  } catch {
+    return `ESPECIALIDADES DISPONÍVEIS — usa SEMPRE estes ids exactos, NUNCA inventes:\n${lines}`
+  } catch (err) {
+    console.error("[loadSpecialtiesLine error]", err)
     return ""
   }
 }
