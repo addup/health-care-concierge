@@ -17,6 +17,7 @@ import {
   type ToolCtx,
   type ToolResult
 } from "./agent-tools"
+import { patientClient } from "./supabase"
 
 // ---------------------------------------------------------------------
 // Types & constants
@@ -24,15 +25,18 @@ import {
 
 type Role = "system" | "user" | "assistant" | "tool"
 
+interface ToolCall {
+  id: string
+  name: string
+  arguments: string  // JSON string
+}
+
 interface AgentMessage {
   role: Role
   content: string | null
-  tool_calls?: Array<{
-    id: string
-    type: "function"
-    function: { name: string; arguments: string }
-  }>
-  tool_call_id?: string
+  tool_calls?: ToolCall[]
+  // Tool messages tag the call by name (Cloudflare Llama style).
+  name?: string
 }
 
 export interface AgentState {
@@ -177,6 +181,15 @@ export async function handleAgentText(
 
   const state = (await storage.get<AgentState>(STORAGE_KEY)) ?? newAgentState()
   const isFirstTurn = state.messages.length === 0
+  const willHardcode = isFirstTurn && text.trim().length < 60
+
+  console.log(JSON.stringify({
+    tag: "agent-text",
+    isFirstTurn,
+    text_len: text.length,
+    willHardcode,
+    history_len: state.messages.length
+  }))
 
   state.messages.push({ role: "user", content: text })
 
@@ -241,10 +254,20 @@ async function runLoop(
   state: AgentState
 ): Promise<void> {
   const ctx: ToolCtx = { env, storage, chat_id, locale, auth }
+  // Detect repeated identical tool calls — the model occasionally gets
+  // stuck calling the same tool with the same args after a validation
+  // error. Two strikes and we bail with a friendly message.
+  let lastSig = ""
+  let repeatCount = 0
+
+  // Pre-fetch the active specialties so we can inline their UUIDs in the
+  // system prompt. Llama 3.3 fp8-fast tends to skip list_specialties and
+  // invent ids; embedding the truth in the prompt sidesteps that.
+  const specialtiesLine = await loadSpecialtiesLine(env, auth)
 
   for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
     await sendChatAction(env, chat_id, "typing")
-    const response = await callLlm(env, withSystem(state.messages))
+    const response = await callLlm(env, withSystem(state.messages, specialtiesLine))
 
     if (!response) {
       state.failure_count += 1
@@ -259,7 +282,32 @@ async function runLoop(
     }
     state.failure_count = 0
 
+    console.log(JSON.stringify({
+      tag: "agent-llm-response",
+      iter: i,
+      tool_calls: (response.tool_calls ?? []).map((tc) => ({
+        name: tc.name,
+        args: tc.arguments.length > 240 ? tc.arguments.slice(0, 240) + "…" : tc.arguments
+      })),
+      content_len: response.content?.length ?? 0
+    }))
+
     if (response.tool_calls && response.tool_calls.length > 0) {
+      // Repetition guard.
+      const sig = response.tool_calls.map((tc) => `${tc.name}:${tc.arguments}`).join("|")
+      if (sig === lastSig) {
+        repeatCount += 1
+        if (repeatCount >= 2) {
+          console.log(JSON.stringify({ tag: "agent-loop-stuck", sig: sig.slice(0, 120) }))
+          await sendMessage(env, chat_id, t(locale, "agent_iter_cap"))
+          await storage.delete(STORAGE_KEY)
+          return
+        }
+      } else {
+        lastSig = sig
+        repeatCount = 0
+      }
+
       // Append assistant message with tool calls (content can be empty).
       state.messages.push({
         role: "assistant",
@@ -270,11 +318,11 @@ async function runLoop(
       let endTurn = false
       let terminate = false
       for (const tc of response.tool_calls) {
-        const result: ToolResult = await dispatchTool(tc.function.name, tc.function.arguments, ctx)
+        const result: ToolResult = await dispatchTool(tc.name, tc.arguments, ctx)
         state.messages.push({
           role: "tool",
-          content: JSON.stringify(result.data),
-          tool_call_id: tc.id
+          name: tc.name,
+          content: JSON.stringify(result.data)
         })
         if (result.ends_turn) endTurn = true
         if (result.terminate) terminate = true
@@ -317,19 +365,27 @@ async function runLoop(
 
 interface LlmResponse {
   content: string | null
-  tool_calls?: Array<{
-    id: string
-    type: "function"
-    function: { name: string; arguments: string }
-  }>
+  tool_calls?: ToolCall[]
 }
 
 async function callLlm(env: Env, messages: AgentMessage[]): Promise<LlmResponse | null> {
+  // Workers AI's chat schema rejects `content: null`. Coerce to "".
+  // Strip empty fields so we don't trip oneOf branches.
+  const sanitized = messages.map((m) => {
+    const out: Record<string, unknown> = {
+      role: m.role,
+      content: typeof m.content === "string" ? m.content : ""
+    }
+    if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls
+    if (m.name) out.name = m.name
+    return out
+  })
+
   for (const model of [PRIMARY_MODEL, FALLBACK_MODEL]) {
     try {
       const out = await withTimeout(
         env.AI.run(model as never, {
-          messages,
+          messages: sanitized,
           tools: AGENT_TOOLS,
           temperature: 0.2,
           max_tokens: 700
@@ -338,6 +394,13 @@ async function callLlm(env: Env, messages: AgentMessage[]): Promise<LlmResponse 
       )
       const parsed = parseLlmResponse(out)
       if (parsed) return parsed
+      // Parse failed — log raw shape so we can debug.
+      console.log(JSON.stringify({
+        tag: "agent-llm-parse-failed",
+        model,
+        raw_shape: typeof out === "object" && out !== null ? Object.keys(out as object) : typeof out,
+        raw_preview: JSON.stringify(out).slice(0, 500)
+      }))
     } catch (err) {
       console.error("[agent llm error]", model, err)
     }
@@ -349,28 +412,31 @@ function parseLlmResponse(raw: unknown): LlmResponse | null {
   if (!raw || typeof raw !== "object") return null
   const r = raw as Record<string, unknown>
 
-  // Workers AI Llama tool-calling shape:
-  //   { response?: string, tool_calls?: [{ id, function: {name, arguments} }] }
-  // We accept variants where tool_calls is missing or content is empty.
+  // Cloudflare Workers AI tool-calling shape (Llama 3.x):
+  //   { response?: string, tool_calls?: [{ name, arguments }] }
+  // Where `arguments` is either a JSON string or already an object.
+  // We also accept the OpenAI-nested fallback for safety.
   const content = typeof r.response === "string" ? r.response : null
   const tcRaw = (r.tool_calls ?? r.tool_call ?? null) as unknown
   if (Array.isArray(tcRaw)) {
-    const tool_calls = tcRaw
+    const tool_calls: ToolCall[] = tcRaw
       .map((entry) => {
         if (!entry || typeof entry !== "object") return null
         const e = entry as Record<string, unknown>
-        const fn = (e.function ?? e) as Record<string, unknown> | undefined
-        const name = typeof fn?.name === "string" ? fn.name : null
-        const argsRaw = fn?.arguments
+        // Accept both flat `{name, arguments}` and nested `{function: {name, arguments}}`.
+        const flat = (typeof e.name === "string") ? e : (e.function as Record<string, unknown> | undefined)
+        if (!flat) return null
+        const name = typeof flat.name === "string" ? flat.name : null
         if (!name) return null
+        const argsRaw = flat.arguments
         let argsStr: string
         if (typeof argsRaw === "string") argsStr = argsRaw
         else if (argsRaw && typeof argsRaw === "object") argsStr = JSON.stringify(argsRaw)
         else argsStr = "{}"
         const id = typeof e.id === "string" ? e.id : `tc_${Math.random().toString(36).slice(2, 10)}`
-        return { id, type: "function" as const, function: { name, arguments: argsStr } }
+        return { id, name, arguments: argsStr }
       })
-      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .filter((x): x is ToolCall => x !== null)
     if (tool_calls.length > 0) return { content, tool_calls }
   }
 
@@ -390,11 +456,35 @@ function newAgentState(): AgentState {
 }
 
 /** Prepend the system prompt and trim history to MAX_MESSAGES. */
-function withSystem(messages: AgentMessage[]): AgentMessage[] {
+function withSystem(messages: AgentMessage[], specialtiesLine: string): AgentMessage[] {
   const trimmed = messages.length > MAX_MESSAGES
     ? messages.slice(messages.length - MAX_MESSAGES)
     : messages
-  return [{ role: "system", content: SYSTEM_PROMPT_PT }, ...trimmed]
+  const sys = specialtiesLine
+    ? `${SYSTEM_PROMPT_PT}\n\n${specialtiesLine}`
+    : SYSTEM_PROMPT_PT
+  return [{ role: "system", content: sys }, ...trimmed]
+}
+
+/**
+ * Build a system-prompt addendum listing active specialties with their
+ * UUIDs. Lets the model use real ids directly in present_choices without
+ * needing a prior list_specialties tool call.
+ */
+async function loadSpecialtiesLine(env: Env, auth: AuthCtx): Promise<string> {
+  try {
+    const sb = patientClient(env, auth.access_token)
+    const { data, error } = await sb
+      .from("specialties")
+      .select("id, name")
+      .eq("is_active", true)
+      .order("name")
+    if (error || !data || data.length === 0) return ""
+    const lines = data.map((s) => `  - ${s.name} (id: ${s.id})`).join("\n")
+    return `ESPECIALIDADES DISPONÍVEIS — usa SEMPRE estes ids exactos em present_choices, NUNCA inventes:\n${lines}`
+  } catch {
+    return ""
+  }
 }
 
 async function persist(storage: DurableObjectStorage, state: AgentState): Promise<void> {

@@ -40,166 +40,136 @@ export interface ToolResult {
 
 export const AGENT_TOOLS = [
   {
-    type: "function",
-    function: {
-      name: "list_specialties",
-      description: "Lista todas as especialidades médicas activas oferecidas pela clínica.",
-      parameters: { type: "object", properties: {}, required: [] }
+    name: "list_specialties",
+    description: "Lista todas as especialidades médicas activas oferecidas pela clínica.",
+    parameters: { type: "object", properties: {}, required: [] }
+  },
+  {
+    name: "list_appointment_types",
+    description: "Lista os tipos de consulta activos para uma especialidade (ex.: Primeira consulta, Consulta de seguimento).",
+    parameters: {
+      type: "object",
+      properties: {
+        specialty_id: { type: "string", description: "UUID da especialidade." }
+      },
+      required: ["specialty_id"]
     }
   },
   {
-    type: "function",
-    function: {
-      name: "list_appointment_types",
-      description: "Lista os tipos de consulta activos para uma especialidade (ex.: Primeira consulta, Consulta de seguimento).",
-      parameters: {
-        type: "object",
-        properties: {
-          specialty_id: { type: "string", description: "UUID da especialidade." }
+    name: "list_doctors",
+    description: "Lista os médicos disponíveis para uma especialidade. Usa apenas se o paciente perguntar por um médico específico.",
+    parameters: {
+      type: "object",
+      properties: {
+        specialty_id: { type: "string", description: "UUID da especialidade." }
+      },
+      required: ["specialty_id"]
+    }
+  },
+  {
+    name: "find_dates_with_availability",
+    description: "Procura nos próximos N dias as datas que têm pelo menos um slot disponível para o tipo de consulta. Devolve lista de datas YYYY-MM-DD. Lista vazia = sem disponibilidade no horizonte.",
+    parameters: {
+      type: "object",
+      properties: {
+        appointment_type_id: { type: "string" },
+        lookahead_days: { type: "number", description: "Default 14, máximo 30." },
+        doctor_id: { type: "string", description: "Opcional, filtra por médico." }
+      },
+      required: ["appointment_type_id"]
+    }
+  },
+  {
+    name: "list_available_slots",
+    description: "Lista os horários (slots) disponíveis para um tipo de consulta numa data. Cada slot tem time HH:MM, doctor_id e doctor_name.",
+    parameters: {
+      type: "object",
+      properties: {
+        appointment_type_id: { type: "string" },
+        target_date: { type: "string", description: "YYYY-MM-DD" },
+        doctor_id: { type: "string", description: "Opcional, filtra por médico." }
+      },
+      required: ["appointment_type_id", "target_date"]
+    }
+  },
+  {
+    name: "present_choices",
+    description: "Mostra ao paciente botões inline com opções para escolher. Usa SEMPRE para escolha de especialidade, tipo, data, slot ou médico — em vez de pedir para escrever. Encerra o turno; a próxima mensagem do paciente vem via callback.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt_pt: { type: "string", description: "Pergunta breve antes dos botões, em PT-PT." },
+        kind: {
+          type: "string",
+          enum: ["specialty", "appointment_type", "date", "slot", "doctor"],
+          description: "Tipo de escolha. Determina como o callback é interpretado."
         },
-        required: ["specialty_id"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_doctors",
-      description: "Lista os médicos disponíveis para uma especialidade. Usa apenas se o paciente perguntar por um médico específico.",
-      parameters: {
-        type: "object",
-        properties: {
-          specialty_id: { type: "string", description: "UUID da especialidade." }
-        },
-        required: ["specialty_id"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "find_dates_with_availability",
-      description: "Procura nos próximos N dias as datas que têm pelo menos um slot disponível para o tipo de consulta. Devolve lista de datas YYYY-MM-DD. Lista vazia = sem disponibilidade no horizonte.",
-      parameters: {
-        type: "object",
-        properties: {
-          appointment_type_id: { type: "string" },
-          lookahead_days: { type: "number", description: "Default 14, máximo 30." },
-          doctor_id: { type: "string", description: "Opcional, filtra por médico." }
-        },
-        required: ["appointment_type_id"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_available_slots",
-      description: "Lista os horários (slots) disponíveis para um tipo de consulta numa data. Cada slot tem time HH:MM, doctor_id e doctor_name.",
-      parameters: {
-        type: "object",
-        properties: {
-          appointment_type_id: { type: "string" },
-          target_date: { type: "string", description: "YYYY-MM-DD" },
-          doctor_id: { type: "string", description: "Opcional, filtra por médico." }
-        },
-        required: ["appointment_type_id", "target_date"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "present_choices",
-      description: "Mostra ao paciente botões inline com opções para escolher. Usa SEMPRE para escolha de especialidade, tipo, data, slot ou médico — em vez de pedir para escrever. Encerra o turno; a próxima mensagem do paciente vem via callback.",
-      parameters: {
-        type: "object",
-        properties: {
-          prompt_pt: { type: "string", description: "Pergunta breve antes dos botões, em PT-PT." },
-          kind: {
-            type: "string",
-            enum: ["specialty", "appointment_type", "date", "slot", "doctor"],
-            description: "Tipo de escolha. Determina como o callback é interpretado."
-          },
-          options: {
-            type: "array",
-            description: "Lista de opções com id (uuid ou date string ou HH:MM/doctor_id) e label legível.",
-            items: {
-              type: "object",
-              properties: {
-                id: { type: "string" },
-                label: { type: "string" }
-              },
-              required: ["id", "label"]
-            }
+        options: {
+          type: "array",
+          description: "Lista de opções com id (uuid ou date string ou HH:MM/doctor_id) e label legível.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" }
+            },
+            required: ["id", "label"]
           }
-        },
-        required: ["prompt_pt", "kind", "options"]
-      }
+        }
+      },
+      required: ["prompt_pt", "kind", "options"]
     }
   },
   {
-    type: "function",
-    function: {
-      name: "confirm_booking",
-      description: "Mostra ao paciente um resumo da consulta a marcar e dois botões: Confirmar / Cancelar. OBRIGATÓRIO antes de create_appointment. Encerra o turno.",
-      parameters: {
-        type: "object",
-        properties: {
-          summary_pt: {
-            type: "string",
-            description: "Resumo curto em PT-PT: especialidade, tipo, dia, hora, médico."
-          }
-        },
-        required: ["summary_pt"]
-      }
+    name: "confirm_booking",
+    description: "Mostra ao paciente um resumo da consulta a marcar e dois botões: Confirmar / Cancelar. OBRIGATÓRIO antes de create_appointment. Encerra o turno.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary_pt: {
+          type: "string",
+          description: "Resumo curto em PT-PT: especialidade, tipo, dia, hora, médico."
+        }
+      },
+      required: ["summary_pt"]
     }
   },
   {
-    type: "function",
-    function: {
-      name: "create_appointment",
-      description: "Cria a consulta na base de dados. Retorna {success, appointment_id?, error?}. Verifica disponibilidade do slot antes de inserir.",
-      parameters: {
-        type: "object",
-        properties: {
-          doctor_id: { type: "string" },
-          appointment_type_id: { type: "string" },
-          scheduled_at: { type: "string", description: "ISO timestamp UTC, ex 2026-05-08T09:30:00Z" },
-          duration_min: { type: "number" }
-        },
-        required: ["doctor_id", "appointment_type_id", "scheduled_at", "duration_min"]
-      }
+    name: "create_appointment",
+    description: "Cria a consulta na base de dados. Retorna {success, appointment_id?, error?}. Verifica disponibilidade do slot antes de inserir.",
+    parameters: {
+      type: "object",
+      properties: {
+        doctor_id: { type: "string" },
+        appointment_type_id: { type: "string" },
+        scheduled_at: { type: "string", description: "ISO timestamp UTC, ex 2026-05-08T09:30:00Z" },
+        duration_min: { type: "number" }
+      },
+      required: ["doctor_id", "appointment_type_id", "scheduled_at", "duration_min"]
     }
   },
   {
-    type: "function",
-    function: {
-      name: "register_interest",
-      description: "Regista o interesse do paciente quando não há disponibilidade no horizonte. A clínica vai contactá-lo. Diz ao paciente em mensagem natural que o interesse ficou registado.",
-      parameters: {
-        type: "object",
-        properties: {
-          specialty_id: { type: "string" },
-          appointment_type_id: { type: "string", description: "Opcional." },
-          note: { type: "string", description: "Contexto extra para a clínica (motivo, restrições, etc.)." }
-        },
-        required: ["specialty_id"]
-      }
+    name: "register_interest",
+    description: "Regista o interesse do paciente quando não há disponibilidade no horizonte. A clínica vai contactá-lo. Diz ao paciente em mensagem natural que o interesse ficou registado.",
+    parameters: {
+      type: "object",
+      properties: {
+        specialty_id: { type: "string" },
+        appointment_type_id: { type: "string", description: "Opcional." },
+        note: { type: "string", description: "Contexto extra para a clínica (motivo, restrições, etc.)." }
+      },
+      required: ["specialty_id"]
     }
   },
   {
-    type: "function",
-    function: {
-      name: "escalate_red_flag",
-      description: "Bandeira vermelha — sintomas que precisam de avaliação urgente. Encaminha o paciente para 112. NÃO marques consulta. Encerra a conversa.",
-      parameters: {
-        type: "object",
-        properties: {
-          reason: { type: "string", description: "Sintoma que disparou a escalation." }
-        },
-        required: ["reason"]
-      }
+    name: "escalate_red_flag",
+    description: "Bandeira vermelha — sintomas que precisam de avaliação urgente. Encaminha o paciente para 112. NÃO marques consulta. Encerra a conversa.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Sintoma que disparou a escalation." }
+      },
+      required: ["reason"]
     }
   }
 ] as const
@@ -358,7 +328,13 @@ async function toolPresentChoices(ctx: ToolCtx, args: RawArgs): Promise<ToolResu
   const kind = String(args.kind ?? "")
   const options = Array.isArray(args.options) ? args.options : []
   if (!prompt || !kind || options.length === 0) {
-    return { data: { error: "invalid_present_choices_args" } }
+    return {
+      data: {
+        error: "invalid_present_choices_args",
+        hint: "Required: prompt_pt (non-empty), kind (specialty|appointment_type|date|slot|doctor), options (non-empty array of {id, label}). For specialty options, call list_specialties FIRST to get real ids, do NOT invent ids.",
+        got: { prompt_len: prompt.length, kind, options_len: options.length }
+      }
+    }
   }
   if (options.length > 12) options.length = 12  // Telegram practical limit
 
