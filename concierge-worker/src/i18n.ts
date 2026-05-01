@@ -57,6 +57,11 @@ type StringKey =
   | "cancel_failed"
   | "reschedule_done"
   | "reschedule_failed"
+  | "triage_red_flag"
+  | "triage_handoff_routine"
+  | "triage_handoff_soon"
+  | "triage_failed"
+  | "triage_max_turns"
 
 const STRINGS: Record<Locale, Record<StringKey, string>> = {
   pt: {
@@ -106,7 +111,12 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     cancel_kept: "Mantive a consulta.",
     cancel_failed: "Não consegui cancelar agora. Tenta outra vez.",
     reschedule_done: "✅ Reagendado para {when}.",
-    reschedule_failed: "Não consegui reagendar agora. Tenta outra vez."
+    reschedule_failed: "Não consegui reagendar agora. Tenta outra vez.",
+    triage_red_flag: "⚠️ Os teus sintomas precisam de avaliação urgente. Liga 112 ou dirige-te ao serviço de urgência mais próximo. A clínica não substitui cuidados de urgência.",
+    triage_handoff_routine: "Sugiro {specialty}. Vou mostrar-te os horários disponíveis.",
+    triage_handoff_soon: "Sugiro {specialty} o mais cedo possível. Vou mostrar-te os horários disponíveis.",
+    triage_failed: "Não consegui fazer a triagem. Posso marcar Medicina Geral?",
+    triage_max_turns: "Para garantir, vou marcar Medicina Geral — descreves tudo na consulta."
   },
   en: {
     welcome_unlinked: "Hi! I'm the EQUAL Care concierge. To identify you, what's your email?",
@@ -155,7 +165,12 @@ const STRINGS: Record<Locale, Record<StringKey, string>> = {
     cancel_kept: "I kept the appointment.",
     cancel_failed: "I couldn't cancel right now. Try again.",
     reschedule_done: "✅ Rescheduled to {when}.",
-    reschedule_failed: "I couldn't reschedule right now. Try again."
+    reschedule_failed: "I couldn't reschedule right now. Try again.",
+    triage_red_flag: "⚠️ Your symptoms need urgent evaluation. Call 112 or go to the nearest emergency service. The clinic does not replace emergency care.",
+    triage_handoff_routine: "I suggest {specialty}. Let me show you available slots.",
+    triage_handoff_soon: "I suggest {specialty} as soon as possible. Let me show you available slots.",
+    triage_failed: "I couldn't run triage right now. Should I book General Medicine?",
+    triage_max_turns: "To be safe I'll book General Medicine — you can describe everything in person."
   }
 }
 

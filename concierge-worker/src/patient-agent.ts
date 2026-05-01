@@ -30,6 +30,7 @@ import {
   handleCancelConfirm
 } from "./appointments"
 import { faqLookup } from "./faq"
+import { startTriage, handleTriageReply, type TriageState } from "./triage"
 
 interface AuthState {
   patient_id: string
@@ -104,7 +105,8 @@ export class PatientAgent implements DurableObject {
         "pending_otp",
         "booking_state",
         "reschedule_state",
-        "cancel_state"
+        "cancel_state",
+        "triage_state"
       ])
       await sendMessage(this.env, chat_id, t(locale, "reset_state"))
       return
@@ -132,6 +134,21 @@ export class PatientAgent implements DurableObject {
         this.env,
         chat_id,
         t(locale, "registration_incomplete", { app_url: this.env.PLATFORM_APP_URL })
+      )
+      return
+    }
+
+    // Mid-triage hijack: while triage_state is set, free text is the
+    // patient's reply to the bot's question, NOT a new intent.
+    const triageState = await this.state.storage.get<TriageState>("triage_state")
+    if (triageState) {
+      await handleTriageReply(
+        this.env,
+        this.state.storage,
+        chat_id,
+        locale,
+        { patient_id: auth.patient_id, access_token: auth.access_token },
+        text
       )
       return
     }
@@ -202,6 +219,15 @@ export class PatientAgent implements DurableObject {
         await faqLookup(this.env, chat_id, rawText, locale)
         return
       case "TRIAGE":
+        await startTriage(
+          this.env,
+          this.state.storage,
+          chat_id,
+          locale,
+          { patient_id: auth.patient_id, access_token: auth.access_token },
+          rawText
+        )
+        return
       case "FORM_RESPONSE":
       case "OTHER":
       default:
